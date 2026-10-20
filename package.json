@@ -1,0 +1,8 @@
+{
+  "name": "claude-learn",
+  "private": true,
+  "description": "Diagram renderer used by learn-viz",
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "11.4.2"
+  }
+}

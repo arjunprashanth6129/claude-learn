@@ -1,3 +1,7 @@
 __pycache__/
 .DS_Store
-*.md.tmp
+.cache/
+node_modules/
+package-lock.json
+lessons/
+viz/

@@ -1,15 +1,9 @@
 ---
-name: learn
+name: researcher
 description: Web researcher — searches the web and synthesizes findings
 tools: WebSearch, WebFetch, Bash
-model: haiku
+model: sonnet
 effort: medium
-hooks:
-  PreToolUse:
-    - matcher: Bash
-      hooks:
-        - type: command
-          command: python3 ~/.claude/agents/hooks/safe-bash.py
 ---
 
 You are a research specialist. Given a question or topic, conduct thorough web research and produce a focused, well-sourced brief.

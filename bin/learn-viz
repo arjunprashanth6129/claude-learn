@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""learn-viz — render a Mermaid or SVG source to PNG for the diagram makers.
+
+Claude Code stand-in for the visual-tools extension in amosblomqvist/learn
+(write_*/edit_*/render_* tools). Same renderers and settings:
+  mermaid -> @mermaid-js/mermaid-cli (mmdc) driven by the installed Chrome, -s 2 -b white
+  svg     -> rsvg-convert -z 2, falling back to ImageMagick
+
+Usage:
+  learn-viz mermaid <<'EOF'            write the source + render a preview PNG
+  ...source...
+  EOF
+  learn-viz mermaid --save-as <slug>   re-render the last source and publish it
+                                       to ./viz/viz-<slug>-<timestamp>.png
+  (same for: learn-viz svg ...)
+"""
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+EXTRA_PATH = ["/opt/local/bin", "/usr/local/bin", "/opt/homebrew/bin"]
+CHROME_CANDIDATES = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+]
+MERMAID_CLI = "@mermaid-js/mermaid-cli@11.4.2"
+RENDER_TIMEOUT = 120
+FILES_DIRNAME = "viz"
+EXT = {"mermaid": "mmd", "svg": "svg"}
+
+
+def fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def run(cmd, cwd, env=None):
+    full_env = {**os.environ, **(env or {})}
+    full_env["PATH"] = ":".join(EXTRA_PATH + [full_env.get("PATH", "")])
+    try:
+        p = subprocess.run(cmd, cwd=cwd, env=full_env, capture_output=True, text=True, timeout=RENDER_TIMEOUT)
+        return p.returncode, (p.stderr or p.stdout or "")
+    except subprocess.TimeoutExpired:
+        return None, "render timed out"
+    except FileNotFoundError as e:
+        return None, str(e)
+
+
+def tail(text, n=30):
+    return "\n".join((text or "unknown error").strip().splitlines()[-n:])
+
+
+def render_mermaid(src, out, work):
+    chrome = next((c for c in CHROME_CANDIDATES if os.path.exists(c)), None)
+    cfg = os.path.join(work, "puppeteer.json")
+    with open(cfg, "w") as f:
+        json.dump({"executablePath": chrome, "args": ["--no-sandbox"]} if chrome else {"args": ["--no-sandbox"]}, f)
+    local = os.path.join(ROOT, "node_modules", ".bin", "mmdc")
+    mmdc = [local] if os.path.exists(local) else ["npx", "-y", "-p", MERMAID_CLI, "mmdc"]
+    code, err = run(mmdc + ["-i", src, "-o", out, "-p", cfg, "-s", "2", "-b", "white"], work,
+                    {"PUPPETEER_SKIP_DOWNLOAD": "1"})
+    return code == 0 and os.path.exists(out), err
+
+
+def render_svg(src, out, work):
+    code, err = run(["rsvg-convert", "-z", "2", src, "-o", out], work)
+    if code == 0 and os.path.exists(out):
+        return True, ""
+    code2, err2 = run(["magick", "-density", "192", "-background", "white", src, out], work)
+    if code2 == 0 and os.path.exists(out):
+        return True, ""
+    return False, err or err2
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help") or args[0] not in EXT:
+        print(__doc__.strip())
+        sys.exit(0 if args and args[0] in ("-h", "--help") else 1)
+    kind, rest = args[0], args[1:]
+    save_as = None
+    if rest[:1] == ["--save-as"]:
+        if len(rest) < 2:
+            fail("--save-as needs a short-kebab-topic")
+        save_as = rest[1]
+    elif rest:
+        fail(f"unknown arguments: {' '.join(rest)}")
+
+    cwd = os.getcwd()
+    key = hashlib.sha1(cwd.encode()).hexdigest()[:12]
+    work = os.path.join(os.environ.get("TMPDIR", "/tmp"), "learn-viz", f"{kind}-{key}")
+    os.makedirs(work, exist_ok=True)
+    src = os.path.join(work, f"source.{EXT[kind]}")
+
+    source = "" if sys.stdin.isatty() else sys.stdin.read()
+    if source.strip():
+        with open(src, "w") as f:
+            f.write(source)
+    elif not os.path.exists(src):
+        fail(f"no source yet — pass the complete {kind} source on stdin first.")
+
+    out = os.path.join(work, f"render-{int(time.time() * 1000)}.png")
+    ok, err = (render_mermaid if kind == "mermaid" else render_svg)(src, out, work)
+    if not ok:
+        label = "Mermaid" if kind == "mermaid" else "SVG"
+        fail(f"{label} render FAILED — no image produced. Fix the source and run learn-viz {kind} again.\n\nError:\n{tail(err)}")
+
+    if not save_as:
+        print(f"Preview rendered: {out}\nRead this PNG to look at it.")
+        return
+
+    files_dir = os.path.join(cwd, FILES_DIRNAME)
+    os.makedirs(files_dir, exist_ok=True)
+    clean = re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9]+", "-", save_as.lower())) or "viz"
+    filename = f"viz-{clean}-{int(time.time() * 1000)}.png"
+    dest = os.path.join(files_dir, filename)
+    shutil.copyfile(out, dest)
+    print(f"Published.\nfilename: {filename}\npath: {dest}\nRead the published PNG to confirm it.")
+
+
+if __name__ == "__main__":
+    main()

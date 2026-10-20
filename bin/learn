@@ -1,48 +1,174 @@
 #!/usr/bin/env python3
-"""learn — run the learn research agent from the terminal.
-
-Claude Code port of the `researcher` agent from github.com/amosblomqvist/learn.
-Mirrors how pi-interactive-subagents runs it:
-  system-prompt: append  -> agent body passed via --append-system-prompt-file
-  tools (strict)         -> --tools WebSearch,WebFetch,Bash (safe_bash = Bash + blocking hook)
-  auto-exit: true        -> --print: runs autonomously, final message is the deliverable
-  model / thinking       -> haiku, effort medium (thinking: medium)
+"""learn — an AI teacher in your terminal (Claude Code port of amosblomqvist/learn).
 
 Usage:
-  learn "your question"
-  echo "your question" | learn
-  learn "your question" > brief.md     # progress goes to stderr, brief to stdout
+  learn                         start a learning session in this folder
+  learn "what you want to learn"  start the session with your first message
+  learn --log notes/topic.md    mirror the lesson into this markdown file
+  learn --no-log                don't write a lesson log
+  learn --research "question"   one-off: run only the researcher and print its brief
+
+In the session, just type. The teacher probes what you know with quiz popups,
+proposes a plan, then teaches step by step. Type /exit (or Ctrl+D) to leave.
+
+The lesson is mirrored to lessons/<date>-<topic>.md (open the folder as an
+Obsidian vault to read it with math, diagrams and images rendered).
 
 Env:
-  LEARN_BUDGET_USD  hard spend cap per run (default 0.50)
+  LEARN_MODEL       model for the teacher and its helpers (default: sonnet)
+  LEARN_EFFORT      teacher effort (default: medium)
+  LEARN_BUDGET_USD  spending cap for --research runs (default 0.50)
 """
+import datetime
+import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-import tempfile
 
-AGENT_FILE = os.path.expanduser("~/.claude/agents/learn.md")
-SAFE_BASH = os.path.expanduser("~/.claude/agents/hooks/safe-bash.py")
-MODEL = "haiku"
-EFFORT = "medium"
-TOOLS = "WebSearch,WebFetch,Bash"
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+MODEL = os.environ.get("LEARN_MODEL", "sonnet")
+EFFORT = os.environ.get("LEARN_EFFORT", "medium")
 BUDGET = os.environ.get("LEARN_BUDGET_USD", "0.50")
+# Only what the teacher and its helpers use. --tools caps subagents too, and every
+# tool left out (plus MCP servers and skill listings) is context not paid for on each turn.
+SESSION_TOOLS = "Agent,AskUserQuestion,Read,Write,Edit,Bash,WebSearch,WebFetch"
+CACHE = os.path.join(ROOT, ".cache")
 
 DIM, BOLD, RED, RESET = ("\033[2m", "\033[1m", "\033[31m", "\033[0m") if sys.stderr.isatty() else ("",) * 4
 
 
-def agent_body(path):
+def read_agent(path):
     text = open(path, encoding="utf-8").read()
-    if text.startswith("---"):
-        text = text.split("---", 2)[2]
-    return text.strip() + "\n"
+    _, head, body = text.split("---", 2)
+    meta = {}
+    for line in head.strip().splitlines():
+        key, _, value = line.partition(":")
+        meta[key.strip()] = value.strip()
+    return meta, body.strip() + "\n"
 
 
-def status(msg):
-    print(f"{DIM}{msg}{RESET}", file=sys.stderr, flush=True)
+def skill_body(path):
+    text = open(path, encoding="utf-8").read()
+    return text.split("---", 2)[2].strip() if text.startswith("---") else text.strip()
 
+
+def agents_json():
+    agents = {}
+    for path in sorted(glob.glob(os.path.join(ROOT, "agents", "*.md"))):
+        meta, body = read_agent(path)
+        agents[meta["name"]] = {
+            "description": meta.get("description", ""),
+            "prompt": body,
+            "tools": [t.strip() for t in meta.get("tools", "").split(",") if t.strip()],
+            "model": os.environ.get("LEARN_MODEL", meta.get("model", MODEL)),
+            "effort": meta.get("effort", "medium"),
+        }
+    return agents
+
+
+def hook(script):
+    return {"type": "command", "command": f'python3 "{os.path.join(ROOT, "hooks", script)}"'}
+
+
+def session_settings(log):
+    hooks = {"PreToolUse": [{"matcher": "Bash", "hooks": [hook("safe-bash.py")]}]}
+    if log:
+        md = hook("md-log.py")
+        hooks["UserPromptSubmit"] = [{"hooks": [md]}]
+        hooks["PreToolUse"].append({"matcher": "AskUserQuestion", "hooks": [md]})
+        hooks["PostToolUse"] = [{"matcher": "AskUserQuestion", "hooks": [md]}]
+        hooks["Stop"] = [{"hooks": [md]}]
+    # pi runs tools without asking; safe-bash still blocks dangerous commands.
+    return {"hooks": hooks, "permissions": {"allow": ["Bash", "Read", "WebSearch", "WebFetch"]}}
+
+
+def slugify(text, limit=40):
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s[:limit].rstrip("-")
+
+
+def default_log(topic):
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M")
+    slug = slugify(topic) if topic else ""
+    return os.path.join("lessons", f"{stamp}-{slug}.md" if slug else f"{stamp}.md")
+
+
+def teacher_prompt(log):
+    template = open(os.path.join(ROOT, "system", "teacher.md"), encoding="utf-8").read()
+    log_line = (f"everything you write, plus each quiz/question and its answer, is mirrored live to `{log}`, "
+                "which the learner reads rendered in Obsidian. Images saved in `viz/` embed with `![[filename.png|500]]`."
+                if log else "no lesson log is linked this session; everything is read in the terminal.")
+    return (template.replace("{{LOG_LINE}}", log_line)
+            .replace("{{TEACH_SKILL}}", skill_body(os.path.join(ROOT, "skills", "teach", "SKILL.md")))
+            .replace("{{VISUALIZE_SKILL}}", skill_body(os.path.join(ROOT, "skills", "visualize", "SKILL.md"))))
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def write_cache(name, content):
+    os.makedirs(CACHE, exist_ok=True)
+    # Each file is named <kind>-<pid>.md; drop the ones whose session has ended.
+    for old in glob.glob(os.path.join(CACHE, "*-*.md")):
+        pid = os.path.basename(old).rsplit("-", 1)[-1][:-3]
+        if pid.isdigit() and not pid_alive(int(pid)):
+            os.remove(old)
+    path = os.path.join(CACHE, name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
+
+
+def start_session(topic, log):
+    if log:
+        log = os.path.abspath(log)
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        if not os.path.exists(log):
+            title = topic.strip().rstrip("?.!") if topic else "Lesson"
+            with open(log, "w", encoding="utf-8") as f:
+                f.write(f"# {title[:80]}\n\n*{datetime.datetime.now().strftime('%d %b %Y, %H:%M')}*\n")
+    prompt_file = write_cache(f"teacher-{os.getpid()}.md", teacher_prompt(log))
+
+    env = dict(os.environ)
+    env["PATH"] = os.path.join(ROOT, "bin") + ":" + env.get("PATH", "")
+    if log:
+        env["LEARN_LOG_FILE"] = log
+    else:
+        env.pop("LEARN_LOG_FILE", None)
+
+    cmd = [
+        "claude",
+        "--model", MODEL,
+        "--effort", EFFORT,
+        "--tools", SESSION_TOOLS,
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--permission-mode", "acceptEdits",
+        "--agents", json.dumps(agents_json()),
+        "--append-system-prompt-file", prompt_file,
+        "--settings", json.dumps(session_settings(log)),
+        "-n", "learn" + (f": {topic[:40]}" if topic else ""),
+    ]
+    if topic:
+        cmd.append(topic)
+
+    print(f"{BOLD}learn{RESET}{DIM} · {MODEL} · effort {EFFORT}{RESET}", file=sys.stderr)
+    if log:
+        print(f"{DIM}lesson log: {os.path.relpath(log)}  (open in Obsidian to read it rendered){RESET}", file=sys.stderr)
+    os.execvpe("claude", cmd, env)
+
+
+# --- one-off researcher (learn --research "question") ---
 
 def describe(name, args):
     if name == "WebSearch":
@@ -50,50 +176,35 @@ def describe(name, args):
     if name == "WebFetch":
         return f"web_fetch   {args.get('url', '')}"
     if name == "Bash":
-        return f"safe_bash   {args.get('command', '').splitlines()[0][:120] if args.get('command') else ''}"
+        cmd = (args.get("command") or "").splitlines()
+        return f"safe_bash   {cmd[0][:120] if cmd else ''}"
     return name
 
 
-def main():
-    task = " ".join(sys.argv[1:]).strip()
-    if not task and not sys.stdin.isatty():
-        task = sys.stdin.read().strip()
-    if not task or task in ("-h", "--help"):
-        print(__doc__.strip())
-        sys.exit(0 if task else 1)
-    if not shutil.which("claude"):
-        sys.exit("learn: `claude` CLI not found on PATH")
-
-    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
-        f.write(agent_body(AGENT_FILE))
-        prompt_file = f.name
-
-    settings = {
-        "hooks": {
-            "PreToolUse": [
-                {"matcher": "Bash", "hooks": [{"type": "command", "command": f"python3 {SAFE_BASH}"}]}
-            ]
-        }
-    }
+def research(question):
+    meta, body = read_agent(os.path.join(ROOT, "agents", "researcher.md"))
+    model = os.environ.get("LEARN_MODEL", meta.get("model", MODEL))
+    effort = meta.get("effort", "medium")
+    tools = ",".join(t.strip() for t in meta["tools"].split(","))
+    prompt_file = write_cache(f"researcher-{os.getpid()}.md", body)
+    settings = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [hook("safe-bash.py")]}]}}
     cmd = [
         "claude", "-p",
-        "--model", MODEL,
-        "--effort", EFFORT,
-        "--tools", TOOLS,
-        "--allowedTools", TOOLS,
+        "--model", model, "--effort", effort,
+        "--tools", tools, "--allowedTools", tools,
         "--permission-mode", "dontAsk",
+        "--strict-mcp-config", "--disable-slash-commands",
         "--append-system-prompt-file", prompt_file,
         "--settings", json.dumps(settings),
         "--max-budget-usd", BUDGET,
         "--no-session-persistence",
         "--output-format", "stream-json", "--verbose",
-        task,
+        question,
     ]
-
-    status(f"{BOLD}learn{RESET}{DIM} · {MODEL} · effort {EFFORT}")
+    print(f"{BOLD}researcher{RESET}{DIM} · {model} · effort {effort}{RESET}", file=sys.stderr)
     final, result = None, None
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
         for line in proc.stdout:
             try:
                 ev = json.loads(line)
@@ -103,7 +214,7 @@ def main():
                 texts = []
                 for block in ev.get("message", {}).get("content", []):
                     if block.get("type") == "tool_use":
-                        status("  " + describe(block.get("name", ""), block.get("input") or {}))
+                        print(f"{DIM}  {describe(block.get('name', ''), block.get('input') or {})}{RESET}", file=sys.stderr, flush=True)
                     elif block.get("type") == "text" and block.get("text", "").strip():
                         texts.append(block["text"])
                 if texts:
@@ -115,20 +226,57 @@ def main():
         proc.terminate()
         sys.exit(130)
     finally:
-        os.unlink(prompt_file)
-
+        os.remove(prompt_file)
     if result and result.get("result"):
         final = result["result"]
     if result:
         cost = result.get("total_cost_usd")
-        turns = result.get("num_turns")
-        status(f"done · {turns} turns" + (f" · ${cost:.4f}" if cost is not None else ""))
+        print(f"{DIM}done · {result.get('num_turns')} turns" + (f" · ${cost:.4f}" if cost is not None else "") + RESET, file=sys.stderr)
         if result.get("is_error") or result.get("subtype", "success") != "success":
-            print(f"{RED}learn stopped: {result.get('subtype')}{RESET}", file=sys.stderr)
+            print(f"{RED}researcher stopped: {result.get('subtype')}{RESET}", file=sys.stderr)
     print(file=sys.stderr)
     if final:
         print(final.strip())
     sys.exit(0 if final else 1)
+
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] in (["-h"], ["--help"]):
+        print(__doc__.strip())
+        return
+    if not shutil.which("claude"):
+        sys.exit("learn: the `claude` CLI is not on your PATH — install Claude Code first: https://code.claude.com")
+
+    log, no_log, words = None, False, []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--research":
+            question = " ".join(args[i + 1:]).strip()
+            if not question and not sys.stdin.isatty():
+                question = sys.stdin.read().strip()
+            if not question:
+                sys.exit('usage: learn --research "your question"')
+            return research(question)
+        if a == "--log":
+            if i + 1 >= len(args):
+                sys.exit("usage: learn --log path/to/notes.md")
+            log = args[i + 1]
+            i += 2
+            continue
+        if a == "--no-log":
+            no_log = True
+        elif a.startswith("-"):
+            sys.exit(f"learn: unknown option {a} (see learn --help)")
+        else:
+            words.append(a)
+        i += 1
+
+    topic = " ".join(words).strip()
+    if not sys.stdin.isatty():
+        sys.exit("learn: a session needs an interactive terminal (use learn --research for piped questions)")
+    start_session(topic, None if no_log else (log or default_log(topic)))
 
 
 if __name__ == "__main__":
