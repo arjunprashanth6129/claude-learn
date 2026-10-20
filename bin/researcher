@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""researcher — run the researcher agent from the terminal.
+
+Claude Code port of the `researcher` agent from github.com/amosblomqvist/learn.
+Mirrors how pi-interactive-subagents runs it:
+  system-prompt: append  -> agent body passed via --append-system-prompt-file
+  tools (strict)         -> --tools WebSearch,WebFetch,Bash (safe_bash = Bash + blocking hook)
+  auto-exit: true        -> --print: runs autonomously, final message is the deliverable
+  model / thinking       -> haiku, effort low (low credit usage)
+
+Usage:
+  researcher "your question"
+  echo "your question" | researcher
+  researcher "your question" > brief.md     # progress goes to stderr, brief to stdout
+
+Env:
+  RESEARCHER_BUDGET_USD  hard spend cap per run (default 0.50)
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+AGENT_FILE = os.path.expanduser("~/.claude/agents/researcher.md")
+SAFE_BASH = os.path.expanduser("~/.claude/agents/hooks/safe-bash.py")
+MODEL = "haiku"
+EFFORT = "low"
+TOOLS = "WebSearch,WebFetch,Bash"
+BUDGET = os.environ.get("RESEARCHER_BUDGET_USD", "0.50")
+
+DIM, BOLD, RED, RESET = ("\033[2m", "\033[1m", "\033[31m", "\033[0m") if sys.stderr.isatty() else ("",) * 4
+
+
+def agent_body(path):
+    text = open(path, encoding="utf-8").read()
+    if text.startswith("---"):
+        text = text.split("---", 2)[2]
+    return text.strip() + "\n"
+
+
+def status(msg):
+    print(f"{DIM}{msg}{RESET}", file=sys.stderr, flush=True)
+
+
+def describe(name, args):
+    if name == "WebSearch":
+        return f"web_search  {args.get('query', '')}"
+    if name == "WebFetch":
+        return f"web_fetch   {args.get('url', '')}"
+    if name == "Bash":
+        return f"safe_bash   {args.get('command', '').splitlines()[0][:120] if args.get('command') else ''}"
+    return name
+
+
+def main():
+    task = " ".join(sys.argv[1:]).strip()
+    if not task and not sys.stdin.isatty():
+        task = sys.stdin.read().strip()
+    if not task or task in ("-h", "--help"):
+        print(__doc__.strip())
+        sys.exit(0 if task else 1)
+    if not shutil.which("claude"):
+        sys.exit("researcher: `claude` CLI not found on PATH")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
+        f.write(agent_body(AGENT_FILE))
+        prompt_file = f.name
+
+    settings = {
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": f"python3 {SAFE_BASH}"}]}
+            ]
+        }
+    }
+    cmd = [
+        "claude", "-p",
+        "--model", MODEL,
+        "--effort", EFFORT,
+        "--tools", TOOLS,
+        "--allowedTools", TOOLS,
+        "--permission-mode", "dontAsk",
+        "--append-system-prompt-file", prompt_file,
+        "--settings", json.dumps(settings),
+        "--max-budget-usd", BUDGET,
+        "--no-session-persistence",
+        "--output-format", "stream-json", "--verbose",
+        task,
+    ]
+
+    status(f"{BOLD}researcher{RESET}{DIM} · {MODEL} · effort {EFFORT}")
+    final, result = None, None
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
+        for line in proc.stdout:
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("type") == "assistant":
+                texts = []
+                for block in ev.get("message", {}).get("content", []):
+                    if block.get("type") == "tool_use":
+                        status("  " + describe(block.get("name", ""), block.get("input") or {}))
+                    elif block.get("type") == "text" and block.get("text", "").strip():
+                        texts.append(block["text"])
+                if texts:
+                    final = "\n".join(texts)
+            elif ev.get("type") == "result":
+                result = ev
+        proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        sys.exit(130)
+    finally:
+        os.unlink(prompt_file)
+
+    if result and result.get("result"):
+        final = result["result"]
+    if result:
+        cost = result.get("total_cost_usd")
+        turns = result.get("num_turns")
+        status(f"done · {turns} turns" + (f" · ${cost:.4f}" if cost is not None else ""))
+        if result.get("is_error") or result.get("subtype", "success") != "success":
+            print(f"{RED}researcher stopped: {result.get('subtype')}{RESET}", file=sys.stderr)
+    print(file=sys.stderr)
+    if final:
+        print(final.strip())
+    sys.exit(0 if final else 1)
+
+
+if __name__ == "__main__":
+    main()
