@@ -1,9 +1,9 @@
 ---
-name: researcher
+name: learn
 description: Web researcher — searches the web and synthesizes findings
 tools: WebSearch, WebFetch, Bash
 model: haiku
-effort: low
+effort: medium
 hooks:
   PreToolUse:
     - matcher: Bash

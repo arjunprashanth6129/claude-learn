@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""researcher — run the researcher agent from the terminal.
+"""learn — run the learn research agent from the terminal.
 
 Claude Code port of the `researcher` agent from github.com/amosblomqvist/learn.
 Mirrors how pi-interactive-subagents runs it:
   system-prompt: append  -> agent body passed via --append-system-prompt-file
   tools (strict)         -> --tools WebSearch,WebFetch,Bash (safe_bash = Bash + blocking hook)
   auto-exit: true        -> --print: runs autonomously, final message is the deliverable
-  model / thinking       -> haiku, effort low (low credit usage)
+  model / thinking       -> haiku, effort medium (thinking: medium)
 
 Usage:
-  researcher "your question"
-  echo "your question" | researcher
-  researcher "your question" > brief.md     # progress goes to stderr, brief to stdout
+  learn "your question"
+  echo "your question" | learn
+  learn "your question" > brief.md     # progress goes to stderr, brief to stdout
 
 Env:
-  RESEARCHER_BUDGET_USD  hard spend cap per run (default 0.50)
+  LEARN_BUDGET_USD  hard spend cap per run (default 0.50)
 """
 import json
 import os
@@ -23,12 +23,12 @@ import subprocess
 import sys
 import tempfile
 
-AGENT_FILE = os.path.expanduser("~/.claude/agents/researcher.md")
+AGENT_FILE = os.path.expanduser("~/.claude/agents/learn.md")
 SAFE_BASH = os.path.expanduser("~/.claude/agents/hooks/safe-bash.py")
 MODEL = "haiku"
-EFFORT = "low"
+EFFORT = "medium"
 TOOLS = "WebSearch,WebFetch,Bash"
-BUDGET = os.environ.get("RESEARCHER_BUDGET_USD", "0.50")
+BUDGET = os.environ.get("LEARN_BUDGET_USD", "0.50")
 
 DIM, BOLD, RED, RESET = ("\033[2m", "\033[1m", "\033[31m", "\033[0m") if sys.stderr.isatty() else ("",) * 4
 
@@ -62,7 +62,7 @@ def main():
         print(__doc__.strip())
         sys.exit(0 if task else 1)
     if not shutil.which("claude"):
-        sys.exit("researcher: `claude` CLI not found on PATH")
+        sys.exit("learn: `claude` CLI not found on PATH")
 
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
         f.write(agent_body(AGENT_FILE))
@@ -90,7 +90,7 @@ def main():
         task,
     ]
 
-    status(f"{BOLD}researcher{RESET}{DIM} · {MODEL} · effort {EFFORT}")
+    status(f"{BOLD}learn{RESET}{DIM} · {MODEL} · effort {EFFORT}")
     final, result = None, None
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
@@ -124,7 +124,7 @@ def main():
         turns = result.get("num_turns")
         status(f"done · {turns} turns" + (f" · ${cost:.4f}" if cost is not None else ""))
         if result.get("is_error") or result.get("subtype", "success") != "success":
-            print(f"{RED}researcher stopped: {result.get('subtype')}{RESET}", file=sys.stderr)
+            print(f"{RED}learn stopped: {result.get('subtype')}{RESET}", file=sys.stderr)
     print(file=sys.stderr)
     if final:
         print(final.strip())
