@@ -11,10 +11,12 @@ Usage:
 In the session, just type. The teacher probes what you know with quiz popups,
 proposes a plan, then teaches step by step. Type /exit (or Ctrl+D) to leave.
 
-The lesson is mirrored to lessons/<date>-<topic>.md (open the folder as an
-Obsidian vault to read it with math, diagrams and images rendered).
+Sessions always run in a Learning folder inside your Obsidian vault (never your
+home folder). Each lesson is mirrored to Learning/lessons/<date>-<topic>.md and
+opened in Obsidian, so math, diagrams and images render as you go.
 
 Env:
+  LEARN_DIR         folder to learn in (default: <your Obsidian vault>/Learning)
   LEARN_MODEL       model for the teacher and its helpers (default: sonnet)
   LEARN_EFFORT      teacher effort (default: medium)
   LEARN_BUDGET_USD  spending cap for --research runs (default 0.50)
@@ -36,6 +38,7 @@ BUDGET = os.environ.get("LEARN_BUDGET_USD", "0.50")
 # tool left out (plus MCP servers and skill listings) is context not paid for on each turn.
 SESSION_TOOLS = "Agent,AskUserQuestion,Read,Write,Edit,Bash,WebSearch,WebFetch"
 CACHE = os.path.join(ROOT, ".cache")
+OBSIDIAN_CONFIG = os.path.expanduser("~/Library/Application Support/obsidian/obsidian.json")
 
 DIM, BOLD, RED, RESET = ("\033[2m", "\033[1m", "\033[31m", "\033[0m") if sys.stderr.isatty() else ("",) * 4
 
@@ -69,17 +72,50 @@ def agents_json():
     return agents
 
 
+def obsidian_vaults():
+    """Vault paths Obsidian knows about, the open/most recent one first."""
+    try:
+        vaults = json.load(open(OBSIDIAN_CONFIG, encoding="utf-8")).get("vaults", {}).values()
+    except (OSError, json.JSONDecodeError):
+        return []
+    ranked = sorted(vaults, key=lambda v: (bool(v.get("open")), v.get("ts", 0)), reverse=True)
+    return [v["path"] for v in ranked if os.path.isdir(v.get("path", ""))]
+
+
+def learn_dir():
+    if os.environ.get("LEARN_DIR"):
+        return os.path.abspath(os.path.expanduser(os.environ["LEARN_DIR"]))
+    vaults = obsidian_vaults()
+    return os.path.join(vaults[0], "Learning") if vaults else os.path.expanduser("~/Learning")
+
+
+def in_vault(path):
+    return any(os.path.abspath(path).startswith(os.path.abspath(v) + os.sep) for v in obsidian_vaults())
+
+
+def open_in_obsidian(path):
+    if not in_vault(path) or not shutil.which("open"):
+        return False
+    from urllib.parse import quote
+    subprocess.run(["open", "obsidian://open?path=" + quote(path, safe="")],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return True
+
+
 def hook(script):
     return {"type": "command", "command": f'python3 "{os.path.join(ROOT, "hooks", script)}"'}
 
 
 def session_settings(log):
-    hooks = {"PreToolUse": [{"matcher": "Bash", "hooks": [hook("safe-bash.py")]}]}
+    hooks = {
+        "PreToolUse": [{"matcher": "Bash", "hooks": [hook("safe-bash.py")]}],
+        "PostToolUse": [{"matcher": "AskUserQuestion", "hooks": [hook("quiz.py")]}],
+    }
     if log:
         md = hook("md-log.py")
         hooks["UserPromptSubmit"] = [{"hooks": [md]}]
         hooks["PreToolUse"].append({"matcher": "AskUserQuestion", "hooks": [md]})
-        hooks["PostToolUse"] = [{"matcher": "AskUserQuestion", "hooks": [md]}]
+        hooks["PostToolUse"].append({"matcher": "AskUserQuestion", "hooks": [md]})
         hooks["Stop"] = [{"hooks": [md]}]
     # pi runs tools without asking; safe-bash still blocks dangerous commands.
     return {"hooks": hooks, "permissions": {"allow": ["Bash", "Read", "WebSearch", "WebFetch"]}}
@@ -129,7 +165,11 @@ def write_cache(name, content):
     return path
 
 
-def start_session(topic, log):
+def start_session(topic, log, workdir):
+    # Never run in the home folder: Claude Code looks through its working folder,
+    # and in ~ that means Photos, Music and other apps' data (macOS privacy prompts).
+    os.makedirs(workdir, exist_ok=True)
+    os.chdir(workdir)
     if log:
         log = os.path.abspath(log)
         os.makedirs(os.path.dirname(log), exist_ok=True)
@@ -141,6 +181,9 @@ def start_session(topic, log):
 
     env = dict(os.environ)
     env["PATH"] = os.path.join(ROOT, "bin") + ":" + env.get("PATH", "")
+    # Subagents return their result directly (pi steered results back the same way)
+    # instead of running in the background and interrupting with notifications.
+    env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
     if log:
         env["LEARN_LOG_FILE"] = log
     else:
@@ -162,9 +205,12 @@ def start_session(topic, log):
     if topic:
         cmd.append(topic)
 
-    print(f"{BOLD}learn{RESET}{DIM} · {MODEL} · effort {EFFORT}{RESET}", file=sys.stderr)
+    print(f"{BOLD}learn{RESET}{DIM} · {MODEL} · effort {EFFORT} · {workdir}{RESET}", file=sys.stderr)
     if log:
-        print(f"{DIM}lesson log: {os.path.relpath(log)}  (open in Obsidian to read it rendered){RESET}", file=sys.stderr)
+        if open_in_obsidian(log):
+            print(f"{DIM}lesson opened in Obsidian: {os.path.relpath(log)}{RESET}", file=sys.stderr)
+        else:
+            print(f"{DIM}lesson log: {log}\n(open {workdir} as an Obsidian vault to read it rendered){RESET}", file=sys.stderr)
     os.execvpe("claude", cmd, env)
 
 
@@ -201,6 +247,7 @@ def research(question):
         "--output-format", "stream-json", "--verbose",
         question,
     ]
+    os.chdir(learn_dir() if os.path.isdir(learn_dir()) else ROOT)
     print(f"{BOLD}researcher{RESET}{DIM} · {model} · effort {effort}{RESET}", file=sys.stderr)
     final, result = None, None
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
@@ -276,7 +323,10 @@ def main():
     topic = " ".join(words).strip()
     if not sys.stdin.isatty():
         sys.exit("learn: a session needs an interactive terminal (use learn --research for piped questions)")
-    start_session(topic, None if no_log else (log or default_log(topic)))
+    workdir = learn_dir()
+    if log:
+        log = os.path.abspath(log)  # relative to where you ran learn, before moving into workdir
+    start_session(topic, None if no_log else (log or os.path.join(workdir, default_log(topic))), workdir)
 
 
 if __name__ == "__main__":

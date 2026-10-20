@@ -27,6 +27,9 @@ import re
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from quiz import DONT_KNOW, answer_key, grade, is_quiz  # noqa: E402
+
 QA_TOOL = "AskUserQuestion"
 RETRY_DELAYS = (0.7, 2.0, 5.0, 12.0)
 
@@ -48,10 +51,6 @@ def assistant_block(text):
     return f"> [!abstract] CLAUDE\n\n{text}"
 
 
-def is_quiz(q):
-    return (q.get("header") or "").strip().lower() == "quiz"
-
-
 def question_callout(q):
     body = (q.get("question") or "").split("\n")
     opts = q.get("options") or []
@@ -61,8 +60,37 @@ def question_callout(q):
     return callout("question", "Quiz" if is_quiz(q) else "Question", body)
 
 
-def answer_callout(q, answer, note):
+def graded_callout(g, note):
+    """Same callout as the original quiz tool's md-log entry."""
+    if g["dont_know"]:
+        kind, title = "question", "Quiz — I don't know"
+    elif g["other"]:
+        kind, title = "example", "Quiz — your own answer"
+    elif g["is_correct"]:
+        kind, title = "success", "Quiz — correct ✓"
+    else:
+        kind, title = "failure", "Quiz — incorrect ✗"
+    body = []
+    if g["dont_know"]:
+        body.append("Your answer: I don't know")
+    else:
+        body.append("Your answer: " + ", ".join(f"{i}. {l}" if i else f"Other: {l}"
+                                                for i, l in zip(g["picked_idx"], g["picked"])))
+    body.append("Correct answer: " + ", ".join(str(i) for i in g["correct_idx"]))
+    if note:
+        note_lines = str(note).split("\n")
+        body += ["", f"Note: {note_lines[0]}"] + note_lines[1:]
+    if g["explanation"]:
+        body.append("")
+        body += g["explanation"].split("\n")
+    return callout(kind, title, body)
+
+
+def answer_callout(q, answer, note, key=None):
     quiz = is_quiz(q)
+    g = grade(q, answer, key) if quiz else None
+    if g:
+        return graded_callout(g, note)
     if answer is None:
         title = "Quiz — cancelled" if quiz else "Question — cancelled"
         return callout("warning", title, ["(user skipped)"])
@@ -73,7 +101,7 @@ def answer_callout(q, answer, note):
         shown.append(f"{labels.index(a) + 1}. {a}" if a in labels else (f"Other: {a}" if a else a))
     body = []
     if quiz:
-        if picked == ["I don't know"]:
+        if picked == [DONT_KNOW]:
             body.append("Your answer: I don't know")
         else:
             body.append("Your answer: " + (", ".join(shown) or "(none)"))
@@ -83,7 +111,7 @@ def answer_callout(q, answer, note):
         note_lines = str(note).split("\n")
         body += ["", f"Note: {note_lines[0]}"] + note_lines[1:]
     if quiz:
-        kind = "question" if picked == ["I don't know"] else "example"
+        kind = "question" if picked == [DONT_KNOW] else "example"
         return callout(kind, "Quiz — your answer", body)
     return callout("example", "Answer", body)
 
@@ -100,11 +128,12 @@ def as_questions(value):
     return [q for q in value or [] if isinstance(q, dict)] if isinstance(value, list) else []
 
 
-REMINDER_RE = re.compile(r"<system-reminder>[\s\S]*?</system-reminder>")
+# System-injected text in user turns (reminders, background-task notices) is not the learner's.
+INJECTED_RE = re.compile(r"<(system-reminder|task-notification)>[\s\S]*?</\1>")
 
 
 def clean_user_text(text):
-    text = REMINDER_RE.sub("", text or "").strip()
+    text = INJECTED_RE.sub("", text or "").strip()
     if not text or text.startswith(("<command-", "<local-command", "Caveat:", "[Request interrupted")):
         return ""
     return text
@@ -139,6 +168,7 @@ def parse_answers(entry, questions):
 def render(transcript_path, pending_tool=None, last_message=None, pending_prompt=None):
     blocks, prose = [], []
     asked = {}  # tool_use_id -> questions
+    keys = {}   # tool_use_id -> quiz answer key
     answered = set()
 
     def flush():
@@ -179,7 +209,7 @@ def render(transcript_path, pending_tool=None, last_message=None, pending_prompt
                     answers = parse_answers(e, qs)
                     for q in qs:
                         a, note = answers.get(q.get("question", ""), (None, None))
-                        blocks.append(answer_callout(q, a, note))
+                        blocks.append(answer_callout(q, a, note, keys.get(c["tool_use_id"])))
                     answered.add(c["tool_use_id"])
                 elif c.get("type") == "text":
                     t = clean_user_text(c.get("text", ""))
@@ -198,6 +228,7 @@ def render(transcript_path, pending_tool=None, last_message=None, pending_prompt
                     flush()
                     qs = as_questions((c.get("input") or {}).get("questions"))
                     asked[c.get("id")] = qs
+                    keys[c.get("id")] = answer_key(c.get("input"))
                     blocks += [question_callout(q) for q in qs]
 
     # The hook can fire before Claude Code has written the newest events.

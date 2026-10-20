@@ -28,18 +28,15 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Usage
 
-### 1. Make a folder for your learning (once)
+### 1. Have an Obsidian vault (once)
 
-```bash
-mkdir -p ~/Learning
-```
-
-In Obsidian, choose **Open folder as vault** and pick `~/Learning`. Lessons and diagrams will be saved here.
+If you already use Obsidian, you're set. `learn` finds your vault and works in a `Learning` folder inside it. If you don't, open Obsidian and create a vault anywhere.
 
 ### 2. Start a session
 
+From any folder:
+
 ```bash
-cd ~/Learning
 learn
 ```
 
@@ -49,7 +46,9 @@ Or start with what you want to learn:
 learn "I want to understand how backtesting works in quantitative finance"
 ```
 
-The first time you use a folder, Claude Code asks whether you trust it. Choose **Yes**.
+`learn` always moves into `<your vault>/Learning` before starting. It never runs in your home folder, where Claude Code would look through Photos, Music and other apps' data and trigger macOS privacy prompts. The lesson file opens in Obsidian automatically.
+
+The first time, Claude Code asks whether you trust the `Learning` folder; choose **Yes**. If your vault is in `~/Documents`, macOS may also ask once whether Terminal can access Documents. That is the vault itself, so allow it.
 
 ### 3. Learn
 
@@ -59,13 +58,14 @@ Type to the teacher like a normal chat. A session goes through three phases:
 2. **Plan.** It researches the topic, then shows you a plan and a map of how the ideas depend on each other. Say "go" or ask for changes.
 3. **Teach.** It builds the topic one idea at a time — why it's needed, what it is, how it connects to what you know — and quizzes you on each before moving on.
 
-Keep the lesson file open in Obsidian next to the terminal. It updates as you go: `lessons/<date>-<topic>.md`.
+Keep Obsidian next to the terminal. The lesson (`Learning/lessons/<date>-<topic>.md`) updates as you go, with math, diagrams and graded quizzes rendered.
 
-Type `/exit` or press Ctrl+D to end the session. To continue a lesson later, run `claude --resume` in the same folder.
+Type `/exit` or press Ctrl+D to end the session.
 
 ### Options
 
 ```bash
+LEARN_DIR=~/Notes/Study learn        # learn in a different folder
 learn --log notes/backtesting.md     # mirror into a file of your choice
 learn --no-log                       # no lesson file
 learn --research "your question"     # just run the researcher and print a sourced brief
@@ -89,13 +89,13 @@ The `teach` and `visualize` skills and the two diagram agents are downloaded fro
 
 ### Differences from the original
 
-Claude Code doesn't let you add new popup tools, so the original `quiz` tool is replaced by Claude Code's built-in question popup:
+Claude Code doesn't let you add new popup tools, so quizzes use Claude Code's built-in question popup:
 
-- **Grading.** The original's quiz tool graded your answer itself. Here the teacher decides the correct answer before asking and grades your pick right after (`✓ Correct.` / `✗ Incorrect — correct answer: …`).
+- **Grading.** The teacher attaches a hidden answer key to each quiz. As soon as you answer, a hook (`hooks/quiz.py`) grades your pick and shows ✓ / ✗, the correct answer and the explanation, as the original quiz tool did. The lesson log records it as `Quiz — correct ✓`, `Quiz — incorrect ✗` or `Quiz — I don't know`.
 - **Number of options.** The popup holds at most 4 options, so a quiz has up to 3 real answers plus "I don't know".
-- **Typed answers.** The popup always offers "Other" for typing your own answer. The teacher grades it on its meaning.
+- **Typed answers.** The popup also offers "Type something" and "Chat about this". If you type your own answer, the teacher grades it on its meaning.
 
-Everything else works as in the original: subagents run in the background instead of in tmux panes, and the lesson log is written automatically for every session instead of being linked with `/md-log`.
+Subagents run inside the session (you'll see `researcher(…)` while it works) instead of in tmux panes. The lesson log is written for every session automatically instead of being linked with `/md-log`.
 
 ## Cost
 
