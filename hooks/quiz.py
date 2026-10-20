@@ -115,8 +115,13 @@ def main():
             verdict = "typed their own answer — grade it on its meaning and start your reply with ✓ or ✗ and why"
         else:
             verdict = "correct" if g["is_correct"] else "incorrect"
+        nxt = ("Continue from this result: while probing, adapt your next question; while teaching, write the "
+               "next node's lesson text before any further quiz."
+               if g["is_correct"] else
+               "Continue from this result: while probing, adapt your next question; while teaching, this node "
+               "isn't solid yet, so re-teach it in prose from a different angle before checking it again.")
         context.append(f"Quiz graded: {verdict}. The learner has already been shown ✓/✗, the correct answer "
-                       "and your explanation, so don't repeat them; continue teaching from this result.")
+                       f"and your explanation, so don't repeat them. {nxt}")
     out = {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n".join(context)}}
     if shown:
         out["systemMessage"] = "\n\n".join(shown)

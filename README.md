@@ -58,7 +58,7 @@ Type to the teacher like a normal chat. A session goes through three phases:
 2. **Plan.** It researches the topic, then shows you a plan and a map of how the ideas depend on each other. Say "go" or ask for changes.
 3. **Teach.** It builds the topic one idea at a time — why it's needed, what it is, how it connects to what you know — and quizzes you on each before moving on.
 
-Keep Obsidian next to the terminal. The lesson (`Learning/lessons/<date>-<topic>.md`) updates as you go, with math, diagrams and graded quizzes rendered.
+Keep Obsidian next to the terminal. The lesson (`Learning/lessons/learning <topic>.md`) updates as you go: the plan with its dependency map, each idea's explanation with math and diagrams, and every quiz with its grade.
 
 Type `/exit` or press Ctrl+D to end the session.
 
@@ -82,7 +82,7 @@ learn --help
 | `researcher` | Searches the web and returns a sourced brief, so the teacher checks facts instead of guessing | `agents/researcher.md` |
 | `mermaid-maker` | Draws dependency graphs and flowcharts, looks at the image, fixes it, saves it to `viz/` | `agents/mermaid-maker.md` |
 | `svg-maker` | Draws geometric pictures (number lines, vectors, plots) the same way | `agents/svg-maker.md` |
-| Lesson log | Mirrors your messages, the lessons and every quiz with your answer into a markdown file | `extensions/md-log.ts` |
+| Lesson note | Mirrors your messages, the lessons and every quiz with your answer into a markdown note in Obsidian | `extensions/md-log.ts` |
 | `safe-bash` | Blocks dangerous shell commands (`sudo`, `rm -rf /`, `curl … \| sh`, …) | `safe_bash` |
 
 The `teach` and `visualize` skills and the two diagram agents are downloaded from the original repo when you install, pinned to the version this port was tested with. The skills are used word for word. The diagram agents get one change: their pi-only drawing tools are swapped for the `learn-viz` command (`scripts/fetch-upstream.py` shows the exact edits). The teacher also gets a short extra section that maps the original's tool names to Claude Code's (`system/teacher.md`).
@@ -95,30 +95,43 @@ Claude Code doesn't let you add new popup tools, so quizzes use Claude Code's bu
 - **Number of options.** The popup holds at most 4 options, so a quiz has up to 3 real answers plus "I don't know".
 - **Typed answers.** The popup also offers "Type something" and "Chat about this". If you type your own answer, the teacher grades it on its meaning.
 
-Subagents run inside the session (you'll see `researcher(…)` while it works) instead of in tmux panes. The lesson log is written for every session automatically instead of being linked with `/md-log`.
+Subagents run as separate processes through the `learn-agent` command (you'll see `Bash(learn-agent researcher …)` while one works) instead of in tmux panes. Their final message comes back to the teacher, as with pi's subagents. The lesson note is written for every session automatically instead of being linked with `/md-log`.
+
+The teacher runs with hidden thinking turned off. With it on, the model tended to work out the lesson in its private thinking and go straight to the next quiz, so the teaching never reached the note (the terminal only showed a one-line `· summary`). With it off, the teaching is the visible message, which is what the note mirrors.
 
 ## Cost
 
-Everything runs on Claude Sonnet: the teacher at medium effort (the original's `thinking: medium`), and the researcher and diagram agents at medium effort too. To keep usage low, `learn` starts Claude Code with only the 8 tools the system uses. It loads no MCP servers (like Notion or Google Drive) and no other skills, so each message carries much less context than a normal Claude Code session.
+| Part | Model | Why |
+|---|---|---|
+| Teacher | Sonnet, low effort, no hidden thinking | Writes the lesson; quality matters most |
+| `researcher` | Haiku, low effort | Only the teacher reads its brief |
+| `mermaid-maker`, `svg-maker` | Sonnet, low effort | Must check its own picture is correct |
 
-In testing:
+To keep each message small, the teacher session runs with:
+- only its own instructions (not Claude Code's coding instructions) and two tools: the popup and `learn-agent`
+- no MCP servers (like Notion or Google Drive), no skills, no memory or CLAUDE.md files
+- no background summaries and no auto-mode permission checks
+
+Each message carries about half the context of a normal Claude Code session.
+
+In testing (API prices; on a Claude subscription this comes out of your plan's usage limits instead):
 
 | Step | Cost |
 |---|---|
-| A teaching message plus a quiz | about $0.02–0.03 |
-| A fact check with the researcher | about $0.10–0.15 |
+| A teacher message (lesson text or a quiz) | about $0.013 |
+| A researcher fact check | about $0.13 |
 | A diagram | about $0.05 |
 
-A full lesson is many messages, and each message re-sends the conversation so far, so long sessions cost more than these numbers add up to. If you use Claude Code with a Claude subscription, sessions count against your plan's usage limits instead of costing money directly.
+Before these changes a teacher message cost about $0.031. Each message re-sends the conversation so far, so later messages in a long lesson cost a little more than early ones.
 
-To change the model or effort:
+To trade quality for cost:
 
 ```bash
-LEARN_MODEL=haiku learn          # cheaper, but follows the teaching method less carefully
-LEARN_EFFORT=low learn           # less thinking per message
+LEARN_MODEL=haiku learn          # about 3x cheaper, follows the teaching method less carefully
+LEARN_EFFORT=medium learn        # more careful, more expensive
 ```
 
-`learn --research` stops at $0.50 per run (change with `LEARN_BUDGET_USD=0.25`).
+Each helper-agent run stops at $0.30 (change with `LEARN_BUDGET_USD=0.15`).
 
 ## Customizing
 

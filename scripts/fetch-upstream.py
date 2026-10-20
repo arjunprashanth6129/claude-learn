@@ -42,7 +42,7 @@ def port_maker(kind):
     label = f"agents/{name}.md"
     _, head, body = fetch(label).split("---", 2)
     desc = re.search(r"^description: (.*)$", head, re.M).group(1)
-    front = f"---\nname: {name}\ndescription: {desc}\ntools: Bash, Read\nmodel: sonnet\neffort: medium\n---\n"
+    front = f"---\nname: {name}\ndescription: {desc}\ntools: Bash, Read\nmodel: sonnet\neffort: low\n---\n"
     body = replace(body,
         f"You have exactly three authoring tools — `write_{kind}`, `edit_{kind}`, `render_{kind}` — plus `read`. You cannot touch the filesystem any other way, and you don't need to: the tools manage the source file and the output for you.",
         f"You have exactly one authoring tool — the `learn-viz {kind}` command, run through Bash — plus `Read`. Use Bash ONLY to run `learn-viz`; you cannot touch the filesystem any other way, and you don't need to: `learn-viz` manages the source file and the output for you.\n\n"

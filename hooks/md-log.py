@@ -249,30 +249,38 @@ def render(transcript_path, pending_tool=None, last_message=None, pending_prompt
 
 # --- File section management ---
 
-def marker(session_id):
-    return f"%% learn md-log · session {session_id} · everything below is rewritten by learn %%"
+STATE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), ".state")
+LEGACY_MARK = re.compile(r"%% learn md-log · session .*? %%")
 
 
 def write_log(log_file, session_id, body):
-    lock_dir = os.path.join(os.environ.get("TMPDIR", "/tmp"), "learn-md-log")
-    os.makedirs(lock_dir, exist_ok=True)
-    lock_path = os.path.join(lock_dir, hashlib.sha1(os.path.abspath(log_file).encode()).hexdigest()[:16] + ".lock")
+    """Write this session's lesson into the note, keeping whatever the note held before it.
+
+    What was there before the session started is remembered in a small state file
+    (not as a marker in the note), and the note is rewritten in place like the
+    original's writeFileSync so Obsidian keeps live-updating the open note.
+    """
+    key = hashlib.sha1(os.path.abspath(log_file).encode()).hexdigest()[:16]
+    os.makedirs(STATE_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
-    with open(lock_path, "w") as lock:
+    state_path = os.path.join(STATE_DIR, key + ".json")
+    with open(os.path.join(STATE_DIR, key + ".lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         current = open(log_file, encoding="utf-8").read() if os.path.exists(log_file) else ""
-        mark = marker(session_id)
-        if mark in current:
-            prefix = current.split(mark, 1)[0].rstrip()
+        try:
+            state = json.load(open(state_path, encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+        if state.get("session") == session_id:
+            prefix = state.get("prefix", "")
         else:
-            prefix = current.rstrip()
-        parts = [p for p in (prefix, mark, body) if p]
-        new = "\n\n".join(parts) + "\n"
+            prefix = LEGACY_MARK.split(current, 1)[0].rstrip()
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump({"session": session_id, "file": os.path.abspath(log_file), "prefix": prefix}, f)
+        new = (prefix + "\n\n" + body if prefix else body) + "\n"
         if new != current:
-            tmp = log_file + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
+            with open(log_file, "w", encoding="utf-8") as f:
                 f.write(new)
-            os.replace(tmp, log_file)
 
 
 def sync(data, log_file):
