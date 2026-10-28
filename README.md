@@ -2,7 +2,7 @@
 
 `learn` is an AI teacher in your terminal, built on [Claude Code](https://code.claude.com). Tell it what you want to learn. It finds out what you already know with quick quizzes, proposes a lesson plan, then teaches you step by step, checking each step with a quiz before moving on. The whole lesson is mirrored into a markdown file you can read in [Obsidian](https://obsidian.md) with math, diagrams and images rendered.
 
-It is a port of the AI learning system from [amosblomqvist/learn](https://github.com/amosblomqvist/learn), shown in the video [How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU). The original runs on [pi](https://github.com/badlogic/pi-mono). This version runs the same teaching method, the same agents and the same lesson log on Claude Code, using Claude Sonnet.
+Inspired from the learning system by [amosblomqvist/learn](https://github.com/amosblomqvist/learn), shown in the video [How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU). The original runs on [pi](https://github.com/badlogic/pi-mono). This version runs the same teaching method, the same agents and the same lesson log on Claude Code, using Claude Sonnet.
 
 ## Requirements
 
