@@ -2,7 +2,7 @@
 # Installs learn: an AI teacher for your terminal, built on Claude Code.
 #   ~/.claude-learn/          the system (teacher instructions, agents, hooks, renderer,
 #                             plus the skills and diagram agents downloaded from amosblomqvist/learn)
-#   ~/.local/bin/learn        the command (a link into ~/.claude-learn)
+#   ~/.local/bin/learn, study the commands (links into ~/.claude-learn)
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +20,7 @@ for item in bin agents hooks scripts system LICENSE README.md package.json; do
 done
 chmod +x "$DEST/bin/"* "$DEST/hooks/"*.py
 ln -sf "$DEST/bin/learn" "$BIN/learn"
+ln -sf "$DEST/bin/study" "$BIN/study"
 
 # The teach/visualize skills and diagram agents come from the original repo,
 # which has no license, so they are downloaded from there rather than shipped here.
@@ -50,7 +51,7 @@ grep -qs "Claude Code port of the \`researcher\` agent" "$BIN/researcher" && rm 
 true
 
 echo
-echo "Installed. The learn command is at $BIN/learn"
+echo "Installed: $BIN/learn and $BIN/study"
 
 case ":$PATH:" in
   *":$BIN:"*) ;;
@@ -60,4 +61,5 @@ case ":$PATH:" in
 esac
 
 echo
-echo "Start learning:  mkdir -p ~/Learning && cd ~/Learning && learn"
+echo "Try it:  learn \"how photosynthesis works\""
+echo "         study \"electrochemistry\" ~/Downloads/chapter.pdf"

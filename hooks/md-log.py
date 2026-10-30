@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""md-log — mirror the session to a markdown file for comfortable reading.
+"""md-log — mirror the session into an Obsidian note as you learn.
 
-Claude Code port of extensions/md-log.ts from amosblomqvist/learn. The linked
-.md file is meant to be viewed rendered (e.g. in Obsidian), so lesson text with
-$...$ math, mermaid, code blocks and ![[viz-...png]] embeds renders natively.
+Claude Code port of extensions/md-log.ts from amosblomqvist/learn. The note is
+meant to be read rendered (Obsidian), so lesson text with $...$ math, mermaid,
+code blocks and ![[viz-...png]] embeds renders natively.
 
-Captures only reading-relevant content:
-  - user prompts                       > [!quote] YOU
-  - assistant text (lesson prose)      > [!abstract] CLAUDE
-  - quiz / question Q&A blocks         > [!question] Quiz | Question, then the answer
-Other tools (bash, read, web, subagents, ...) are omitted.
+What the note holds:
+  - the lesson itself (the teacher's message text), as plain markdown
+  - your messages                   > [!quote] You
+  - each quiz, live while you answer, then one foldable block with the result,
+    your answer, the correct answer and the explanation (collapsed when right)
+  - a running score at the end
+Tool calls (subagents, file reads, ...) are left out.
 
 Runs as a Claude Code hook (UserPromptSubmit, PreToolUse/PostToolUse on
-AskUserQuestion, Stop). The log file comes from $LEARN_LOG_FILE, set by `learn`.
+AskUserQuestion, Stop). The note comes from $LEARN_LOG_FILE, set by `learn`.
 
 Claude Code writes the transcript slightly after hooks fire, so instead of
-appending, each event re-renders this session's section of the file from the
+appending, each event re-renders this session's part of the note from the
 transcript (idempotent), once now and a few more times shortly after in a
-detached process. Anything above this session's section in the file is kept.
+detached process. Anything the note held before the session is kept.
 """
 import fcntl
 import hashlib
@@ -28,92 +30,100 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from quiz import DONT_KNOW, answer_key, grade, is_quiz  # noqa: E402
+from quiz import GRADED, answer_key, grade, is_quiz, kind, label  # noqa: E402
 
 QA_TOOL = "AskUserQuestion"
-RETRY_DELAYS = (0.7, 2.0, 5.0, 12.0)
+RETRY_DELAYS = (0.7, 2.0, 5.0, 12.0, 25.0)
 
 
-# --- Formatting (same callouts as the original) ---
+# --- Formatting ---
 
-def callout(kind, title, body_lines):
-    lines = [f"> [!{kind}] {title}"]
+def callout(kind_, title, body_lines, fold=""):
+    lines = [f"> [!{kind_}]{fold} {title}"]
     for line in body_lines:
         lines.append(">" if line == "" else f"> {line}")
     return "\n".join(lines)
 
 
 def user_block(text):
-    return f"> [!quote] YOU\n\n{text}"
+    return callout("quote", "You", text.split("\n"))
 
 
-def assistant_block(text):
-    return f"> [!abstract] CLAUDE\n\n{text}"
+def one_line(text, limit=140):
+    t = " ".join(str(text).split())
+    return t if len(t) <= limit else t[:limit - 1].rstrip() + "…"
 
 
 def question_callout(q):
+    """A question as it is being asked (open, no answer yet)."""
     body = (q.get("question") or "").split("\n")
     opts = q.get("options") or []
     if opts:
         body.append("")
         body += [f"{i + 1}. {o.get('label', '')}" for i, o in enumerate(opts)]
-    return callout("question", "Quiz" if is_quiz(q) else "Question", body)
+    return callout("question", label(q), body)
 
 
-def graded_callout(g, note):
-    """Same callout as the original quiz tool's md-log entry."""
-    if g["dont_know"]:
-        kind, title = "question", "Quiz — I don't know"
-    elif g["other"]:
-        kind, title = "example", "Quiz — your own answer"
-    elif g["is_correct"]:
-        kind, title = "success", "Quiz — correct ✓"
-    else:
-        kind, title = "failure", "Quiz — incorrect ✗"
-    body = []
-    if g["dont_know"]:
-        body.append("Your answer: I don't know")
-    else:
-        body.append("Your answer: " + ", ".join(f"{i}. {l}" if i else f"Other: {l}"
-                                                for i, l in zip(g["picked_idx"], g["picked"])))
-    body.append("Correct answer: " + ", ".join(str(i) for i in g["correct_idx"]))
-    if note:
-        note_lines = str(note).split("\n")
-        body += ["", f"Note: {note_lines[0]}"] + note_lines[1:]
-    if g["explanation"]:
-        body.append("")
-        body += g["explanation"].split("\n")
-    return callout(kind, title, body)
+def option_lines(q, picked, correct):
+    out = []
+    for i, o in enumerate(q.get("options") or []):
+        lab = o.get("label", "")
+        marks = (" ✓" if lab in correct else "") + (" ← your answer" if lab in picked else "")
+        out.append(f"{i + 1}. {lab}{marks}")
+    others = [p for p in picked if p not in [o.get("label", "") for o in q.get("options") or []]]
+    out += [f"Your answer: {p}" for p in others if p]
+    return out
 
 
-def answer_callout(q, answer, note, key=None):
-    quiz = is_quiz(q)
-    g = grade(q, answer, key) if quiz else None
-    if g:
-        return graded_callout(g, note)
+def note_lines(note):
+    if not note:
+        return []
+    lines = str(note).split("\n")
+    return ["", f"Your note: {lines[0]}"] + lines[1:]
+
+
+def answered_callout(q, answer, note, key=None):
+    """One foldable block per answered question: result in the title, details inside."""
+    name = label(q)
+    title_q = one_line(q.get("question", ""))
     if answer is None:
-        title = "Quiz — cancelled" if quiz else "Question — cancelled"
-        return callout("warning", title, ["(user skipped)"])
-    labels = [o.get("label", "") for o in (q.get("options") or [])]
+        return callout("warning", f"{name} skipped · {title_q}", (q.get("question") or "").split("\n"), "-")
+    g = grade(q, answer, key) if is_quiz(q) else None
     picked = [a.strip() for a in str(answer).split(", ")] if q.get("multiSelect") else [str(answer).strip()]
-    shown = []
-    for a in picked:
-        shown.append(f"{labels.index(a) + 1}. {a}" if a in labels else (f"Other: {a}" if a else a))
-    body = []
-    if quiz:
-        if picked == [DONT_KNOW]:
-            body.append("Your answer: I don't know")
-        else:
-            body.append("Your answer: " + (", ".join(shown) or "(none)"))
+    if g is None:
+        if is_quiz(q):  # quiz without an answer key: show the pick, the teacher grades in the lesson
+            return callout("example", f"{name} · {title_q}", option_lines(q, picked, []) + note_lines(note), "-")
+        return callout("example", f"{one_line(q.get('question', ''), 80)} → {one_line(', '.join(picked), 60)}",
+                       note_lines(note)[1:] or [], "-")
+    if g["dont_know"]:
+        kind_, mark, fold = "question", "?", "+"
+    elif g["other"]:
+        kind_, mark, fold = "example", "✎", "+"
+    elif g["is_correct"]:
+        kind_, mark, fold = "success", "✓", "-"
     else:
-        body += shown or ["(no answer)"]
-    if note:
-        note_lines = str(note).split("\n")
-        body += ["", f"Note: {note_lines[0]}"] + note_lines[1:]
-    if quiz:
-        kind = "question" if picked == [DONT_KNOW] else "example"
-        return callout(kind, "Quiz — your answer", body)
-    return callout("example", "Answer", body)
+        kind_, mark, fold = "failure", "✗", "+"
+    full = q.get("question") or ""
+    body = (full.split("\n") + [""] if one_line(full) != " ".join(full.split()) else []) + option_lines(q, picked, g["correct"])
+    body += note_lines(note)
+    if g["explanation"]:
+        body += [""] + g["explanation"].split("\n")
+    return callout(kind_, f"{mark} {name} · {title_q}", body, fold)
+
+
+def score_callout(results):
+    """results: list of (kind, grade) for every graded answer this session."""
+    if not results:
+        return ""
+    parts = []
+    for k, name in GRADED.items():
+        gs = [g for kk, g in results if kk == k]
+        if not gs:
+            continue
+        right = sum(1 for g in gs if g["is_correct"])
+        dk = sum(1 for g in gs if g["dont_know"])
+        parts.append(f"**{name}** {right}/{len(gs)}" + (f" ({dk} I don't know)" if dk else ""))
+    return callout("info", "Score", [" · ".join(parts)])
 
 
 # --- Transcript -> blocks ---
@@ -167,13 +177,14 @@ def parse_answers(entry, questions):
 
 def render(transcript_path, pending_tool=None, last_message=None, pending_prompt=None):
     blocks, prose = [], []
-    asked = {}  # tool_use_id -> questions
-    keys = {}   # tool_use_id -> quiz answer key
-    answered = set()
+    asked = {}    # tool_use_id -> questions
+    keys = {}     # tool_use_id -> quiz answer key
+    pending = {}  # tool_use_id -> index of its live question block(s) in `blocks`
+    results = []  # (kind, grade) per graded answer, for the score
 
     def flush():
         if prose:
-            blocks.append(assistant_block("\n\n".join(prose)))
+            blocks.append("\n\n".join(prose))
             prose.clear()
 
     entries = []
@@ -205,12 +216,26 @@ def render(transcript_path, pending_tool=None, last_message=None, pending_prompt
                     continue
                 if c.get("type") == "tool_result" and c.get("tool_use_id") in asked:
                     flush()
-                    qs = asked[c["tool_use_id"]]
-                    answers = parse_answers(e, qs)
+                    tid = c["tool_use_id"]
+                    qs, key = asked[tid], keys.get(tid)
+                    answers = parse_answers(e, qs) if not c.get("is_error") or "answered" in str(c.get("content")) else {}
+                    done = []
                     for q in qs:
                         a, note = answers.get(q.get("question", ""), (None, None))
-                        blocks.append(answer_callout(q, a, note, keys.get(c["tool_use_id"])))
-                    answered.add(c["tool_use_id"])
+                        if c.get("is_error") and a is None and "doesn't want to proceed" not in str(c.get("content")):
+                            continue  # rejected by a hook/validation and re-asked: not a real question
+                        done.append(answered_callout(q, a, note, key))
+                        g = grade(q, a, key) if is_quiz(q) else None
+                        if g and not g["other"]:
+                            results.append((kind(q), g))
+                    start, n = pending.pop(tid, (None, 0))
+                    if start is not None:  # replace the live question with its answered block
+                        blocks[start:start + n] = done
+                        for other, (st, k) in pending.items():
+                            if st > start:
+                                pending[other] = (st + len(done) - n, k)
+                    else:
+                        blocks += done
                 elif c.get("type") == "text":
                     t = clean_user_text(c.get("text", ""))
                     if t:
@@ -229,6 +254,7 @@ def render(transcript_path, pending_tool=None, last_message=None, pending_prompt
                     qs = as_questions((c.get("input") or {}).get("questions"))
                     asked[c.get("id")] = qs
                     keys[c.get("id")] = answer_key(c.get("input"))
+                    pending[c.get("id")] = (len(blocks), len(qs))
                     blocks += [question_callout(q) for q in qs]
 
     # The hook can fire before Claude Code has written the newest events.
@@ -244,7 +270,13 @@ def render(transcript_path, pending_tool=None, last_message=None, pending_prompt
         if last_message.strip() not in seen:
             prose.append(last_message.strip())
     flush()
-    return "\n\n".join(blocks)
+    # Questions that were rejected (validation error / lesson gate) and never answered
+    # are left as live blocks only if they are the latest thing on screen.
+    for tid, (start, n) in sorted(pending.items(), key=lambda kv: -kv[1][0]):
+        if start + n < len(blocks):
+            del blocks[start:start + n]
+    score = score_callout(results)
+    return "\n\n".join(blocks + ([score] if score else []))
 
 
 # --- File section management ---

@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
-"""learn — an AI teacher in your terminal (Claude Code port of amosblomqvist/learn).
+"""learn / study — an AI teacher in your terminal (Claude Code port of amosblomqvist/learn).
+
+Two modes:
+  learn  a focused lesson: short plan, each idea taught then quizzed, a final quiz, key takeaways
+  study  a deep dive: pre-quiz, plan you approve, each idea taught then quizzed,
+         revision notes + a topic quiz after every topic, a final quiz
 
 Usage:
-  learn                           start a learning session
-  learn "what you want to learn"  start the session with your first message
-  learn --log notes/topic.md      mirror the lesson into this markdown file
-  learn --no-log                  don't write a lesson note
-  learn --research "question"     one-off: run only the researcher and print its brief
+  learn "what you want to learn" [files or URLs ...]
+  study "what you want to study" [files or URLs ...]
+  learn / study                    start and type your topic in the session
+  learn --log notes/topic.md       mirror the lesson into this markdown file
+  learn --no-log                   don't write a lesson note
+  learn --research "question"      one-off: run only the researcher and print its brief
 
-In the session, just type. The teacher probes what you know with quiz popups,
-proposes a plan, then teaches step by step. Type /exit (or Ctrl+D) to leave.
+Files can be PDFs, notes (.md, .txt, .docx), or images; drag one into the terminal
+to paste its path. They are copied into Learning/sources/ so Obsidian shows them too.
+In the session, just type; you can paste more file paths or URLs at any point.
+Type /exit (or Ctrl+D) to leave.
 
 Sessions always run in a Learning folder inside your Obsidian vault (never your
-home folder). Each lesson is mirrored to Learning/lessons/learning <topic>.md and
-opened in Obsidian, so math, diagrams and images render as you go.
+home folder). Each lesson goes to Learning/lessons/ and opens in Obsidian.
 
 Env:
   LEARN_DIR         folder to learn in (default: <your Obsidian vault>/Learning)
-  LEARN_MODEL       teacher model (default: sonnet)
+  LEARN_MODEL       teacher model (default: haiku; sonnet is pricier and, on Claude Code 2.1.30x, often teaches only in its hidden thinking)
   LEARN_EFFORT      teacher effort (default: low)
   LEARN_BUDGET_USD  spending cap per helper-agent run (default 0.30)
 """
@@ -31,7 +38,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-MODEL = os.environ.get("LEARN_MODEL", "sonnet")
+MODEL = os.environ.get("LEARN_MODEL", "haiku")
 EFFORT = os.environ.get("LEARN_EFFORT", "low")
 BUDGET = os.environ.get("LEARN_BUDGET_USD", "0.30")
 # The teacher needs only the popup and a shell for `learn-agent` (its subagents run as
@@ -47,9 +54,15 @@ LEAN_ENV = {
     "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
     "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    "BASH_DEFAULT_TIMEOUT_MS": "900000",            # researcher / diagram runs take minutes
+    "BASH_DEFAULT_TIMEOUT_MS": "900000",            # researcher / reader / diagram runs take minutes
     "BASH_MAX_TIMEOUT_MS": "900000",
 }
+# What the reader can open directly, and what macOS `textutil` can turn into text for it.
+READABLE = {".pdf", ".md", ".markdown", ".txt", ".csv", ".json", ".tex", ".py", ".png", ".jpg", ".jpeg", ".gif", ".webp"}
+CONVERTIBLE = {".docx", ".doc", ".rtf", ".odt", ".html", ".htm", ".webarchive"}
+PATH_RE = re.compile(
+    r"""(?:(?<=['"])((?:~|/)[^'"\n]+?\.[A-Za-z0-9]{1,10})(?=['"]))"""          # quoted paths (may contain spaces)
+    r"""|((?:~|/)(?:\\ |[^\s'"<>|])+\.[A-Za-z0-9]{1,10})""")                   # bare paths, spaces escaped as "\ "
 
 DIM, BOLD, RED, RESET = ("\033[2m", "\033[1m", "\033[31m", "\033[0m") if sys.stderr.isatty() else ("",) * 4
 
@@ -68,6 +81,22 @@ def skill_body(path):
     text = open(path, encoding="utf-8").read()
     return text.split("---", 2)[2].strip() if text.startswith("---") else text.strip()
 
+
+def teach_skill(mode):
+    """The teach skill, word for word. `learn` mode drops the probe→plan→teach process
+    (it has its own, shorter one) but keeps the philosophy, both principles, the accuracy
+    rule and the quiz-writing procedure."""
+    text = skill_body(os.path.join(ROOT, "skills", "teach", "SKILL.md"))
+    if mode != "learn":
+        return text
+    proc, acc = text.find("## The process"), text.find("**Accuracy is non-negotiable")
+    phase1, fmt = text.find("### Phase 1"), text.find("## Formatting")
+    if -1 in (proc, acc, phase1, fmt) or not proc < acc < phase1 < fmt:
+        return text  # upstream changed shape: use it whole rather than guess
+    return text[:proc] + "## Accuracy and quizzes\n\n" + text[acc:phase1].rstrip() + "\n\n" + text[fmt:]
+
+
+# --- Obsidian / folders ---
 
 def obsidian_vaults():
     """Vault paths Obsidian knows about, the open/most recent one first."""
@@ -99,13 +128,119 @@ def open_in_obsidian(path):
     return True
 
 
+# --- the learner's material ---
+
+def unescape_path(p):
+    return os.path.expanduser(p.replace("\\ ", " ").strip())
+
+
+def import_file(path, dest_dir):
+    """Copy a file into dest_dir (inside the vault) so the reader and Obsidian can open it.
+    Word/RTF/HTML are converted to text with macOS textutil. Returns the vault path or None."""
+    ext = os.path.splitext(path)[1].lower()
+    os.makedirs(dest_dir, exist_ok=True)
+    name = os.path.basename(path)
+    if ext in CONVERTIBLE and shutil.which("textutil"):
+        dest = os.path.join(dest_dir, os.path.splitext(name)[0] + ".txt")
+        r = subprocess.run(["textutil", "-convert", "txt", "-output", dest, path], capture_output=True)
+        return dest if r.returncode == 0 else None
+    if ext not in READABLE:
+        return None
+    dest = os.path.join(dest_dir, name)
+    if os.path.abspath(path) != os.path.abspath(dest):
+        shutil.copy2(path, dest)
+    return dest
+
+
+def import_sources(paths, dest_dir):
+    """Import files (and the readable files inside folders). Returns (imported, skipped)."""
+    imported, skipped = [], []
+    for p in paths:
+        files = sorted(glob.glob(os.path.join(p, "**", "*"), recursive=True)) if os.path.isdir(p) else [p]
+        for f in files:
+            if os.path.isfile(f):
+                dest = import_file(f, dest_dir)
+                (imported if dest else skipped).append(dest or f)
+    return imported, skipped
+
+
+def localise_paths(task, workdir):
+    """Copy any of the learner's files named in a subagent task into the vault, and point
+    the task at the copies, so the agent only ever reads inside the Learning folder."""
+    def swap(m):
+        raw = m.group(1) or m.group(2)
+        path = unescape_path(raw)
+        if not os.path.isfile(path) or os.path.abspath(path).startswith(workdir + os.sep):
+            return m.group(0)
+        dest = import_file(path, os.path.join(workdir, "sources", "inbox"))
+        if not dest:
+            return m.group(0)
+        rel = os.path.relpath(dest, workdir)
+        return m.group(0).replace(raw, rel if m.group(1) or " " not in rel else f'"{rel}"')
+    return PATH_RE.sub(swap, task)
+
+
+# --- notes ---
+
+LEAD_IN = re.compile(
+    r"^(?:hi|hey|hello|so|okay|ok|please|pls|and|also|then|now|basically)\b[\s,!.]*"
+    r"|^i\s*(?:'d|would|want|wanna|need|have|am\s+going|'m\s+going)(?:\s+like)?(?:\s+to)?\s+"
+    r"|^(?:study|learn|understand|know|revise|master|cover|go\s+through|read|teach\s+me|explain(?:\s+to\s+me)?"
+    r"|help\s+me(?:\s+with)?|tell\s+me|show\s+me)\b\s*"
+    r"|^(?:more\s+|everything\s+|all\s+)?(?:about|on|regarding)\s+"
+    r"|^(?:the|a|an)\s+(?=(?:ncert|cbse|chapter|unit|topic|concept|basics)\b)", re.I)
+
+
+def note_title(topic, mode):
+    """'i want to study and learn the NCERT chapter called aldehydes, …' -> 'studying the ncert chapter called aldehydes'."""
+    t = re.split(r"[,;:?!(\[\n]|\.\s", topic.strip(), maxsplit=1)[0]
+    prev = None
+    while prev != t:  # peel lead-ins until nothing changes ("i want to study and learn about X")
+        prev, t = t, LEAD_IN.sub("", t).strip()
+    words = re.sub(r'[\\/*"<>|#^\[\]:]', "", t).split()
+    title = " ".join(words[:10]).lower()
+    return f"{'studying' if mode == 'study' else 'learning'} {title}" if title else None
+
+
+def default_log(workdir, topic, mode):
+    lessons = os.path.join(workdir, "lessons")
+    base = note_title(topic, mode) if topic else None
+    if not base:
+        base = f"{mode} session " + datetime.datetime.now().strftime("%Y-%m-%d %H.%M")
+    path, n = os.path.join(lessons, base + ".md"), 2
+    while os.path.exists(path):
+        path, n = os.path.join(lessons, f"{base} {n}.md"), n + 1
+    return path
+
+
+def teacher_prompt(log, mode, sources, urls):
+    template = open(os.path.join(ROOT, "system", "teacher.md"), encoding="utf-8").read()
+    log_line = (f"everything you write, plus each quiz/question and its answer, is mirrored live to `{log}`, "
+                "which the learner reads rendered in Obsidian. Images saved in `viz/` embed with `![[filename.png|500]]`."
+                if log else "no lesson note is linked this session; everything is read in the terminal.")
+    if sources or urls:
+        listed = ", ".join(f"`{s}`" for s in sources + urls)
+        resources = f"The learner gave you this material for the session: {listed}."
+    else:
+        resources = "The learner gave no files at the start."
+    return (template.replace("{{LOG_LINE}}", log_line)
+            .replace("{{TODAY}}", datetime.date.today().isoformat())
+            .replace("{{RESOURCES_LINE}}", resources)
+            .replace("{{MODE}}", open(os.path.join(ROOT, "system", f"mode-{mode}.md"), encoding="utf-8").read().strip())
+            .replace("{{TEACH_SKILL}}", teach_skill(mode))
+            .replace("{{VISUALIZE_SKILL}}", skill_body(os.path.join(ROOT, "skills", "visualize", "SKILL.md"))))
+
+
+# --- session ---
+
 def hook(script):
     return {"type": "command", "command": f'python3 "{os.path.join(ROOT, "hooks", script)}"'}
 
 
 def session_settings(log):
     hooks = {
-        "PreToolUse": [{"matcher": "Bash", "hooks": [hook("safe-bash.py")]}],
+        "PreToolUse": [{"matcher": "Bash", "hooks": [hook("safe-bash.py")]},
+                       {"matcher": "AskUserQuestion", "hooks": [hook("lesson-gate.py")]}],
         "PostToolUse": [{"matcher": "AskUserQuestion", "hooks": [hook("quiz.py")]}],
     }
     if log:
@@ -115,43 +250,6 @@ def session_settings(log):
         hooks["PostToolUse"].append({"matcher": "AskUserQuestion", "hooks": [md]})
         hooks["Stop"] = [{"hooks": [md]}]
     return {"hooks": hooks, "permissions": {"allow": ["Bash(learn-agent:*)"]}}
-
-
-LEAD_INS = re.compile(
-    r"^(hi|hey|hello)?[\s,!.]*(i\s+(want|would\s+like|wanna|need)\s+to\s+(learn|understand|know|study)"
-    r"(\s+more)?(\s+about)?|teach\s+me(\s+about)?|explain(\s+to\s+me)?|help\s+me\s+(learn|understand)"
-    r"(\s+about)?|learn(\s+about)?|what\s+is|what\s+are|how\s+does|how\s+do)\s+", re.I)
-
-
-def note_title(topic):
-    """'I want to learn about X, explain …' -> 'learning X' (like the video's 'learning differential forms')."""
-    t = re.split(r"[,.;:?!\n]", topic.strip(), maxsplit=1)[0]
-    t = LEAD_INS.sub("", t).strip()
-    words = re.sub(r'[\\/*"<>|#^\[\]]', "", t).split()
-    title = " ".join(words[:8])
-    return f"learning {title.lower()}" if title else None
-
-
-def default_log(workdir, topic):
-    lessons = os.path.join(workdir, "lessons")
-    base = note_title(topic) if topic else None
-    if not base:
-        base = "learning session " + datetime.datetime.now().strftime("%Y-%m-%d %H.%M")
-    path, n = os.path.join(lessons, base + ".md"), 2
-    while os.path.exists(path):
-        path, n = os.path.join(lessons, f"{base} {n}.md"), n + 1
-    return path
-
-
-def teacher_prompt(log):
-    template = open(os.path.join(ROOT, "system", "teacher.md"), encoding="utf-8").read()
-    log_line = (f"everything you write, plus each quiz/question and its answer, is mirrored live to `{log}`, "
-                "which the learner reads rendered in Obsidian. Images saved in `viz/` embed with `![[filename.png|500]]`."
-                if log else "no lesson note is linked this session; everything is read in the terminal.")
-    return (template.replace("{{LOG_LINE}}", log_line)
-            .replace("{{TODAY}}", datetime.date.today().isoformat())
-            .replace("{{TEACH_SKILL}}", skill_body(os.path.join(ROOT, "skills", "teach", "SKILL.md")))
-            .replace("{{VISUALIZE_SKILL}}", skill_body(os.path.join(ROOT, "skills", "visualize", "SKILL.md"))))
 
 
 def pid_alive(pid):
@@ -177,29 +275,39 @@ def write_cache(name, content):
     return path
 
 
-def start_session(topic, log, workdir):
+def start_session(mode, topic, files, urls, log, workdir):
     # Never run in the home folder: Claude Code looks through its working folder,
     # and in ~ that means Photos, Music and other apps' data (macOS privacy prompts).
     os.makedirs(workdir, exist_ok=True)
     os.chdir(workdir)
+    if not topic and files:
+        topic = os.path.splitext(os.path.basename(files[0]))[0].replace("_", " ").replace("-", " ")
+    if log is None:
+        log = default_log(workdir, topic, mode)
+    sources = []
+    if files:
+        folder = os.path.splitext(os.path.basename(log))[0] if log else "session"
+        imported, skipped = import_sources(files, os.path.join(workdir, "sources", folder))
+        sources = [os.path.relpath(p, workdir) for p in imported]
+        for s in skipped:
+            print(f"{RED}skipped {s}: can't read this file type (use PDF, text, Word or images){RESET}", file=sys.stderr)
     if log:
         log = os.path.abspath(log)
         os.makedirs(os.path.dirname(log), exist_ok=True)
         if not os.path.exists(log):
             open(log, "w", encoding="utf-8").close()
-    prompt_file = write_cache(f"teacher-{os.getpid()}.md", teacher_prompt(log))
+    prompt_file = write_cache(f"teacher-{os.getpid()}.md", teacher_prompt(log, mode, sources, urls))
 
     env = dict(os.environ, **LEAN_ENV)
     env["PATH"] = os.path.join(ROOT, "bin") + ":" + env.get("PATH", "")
-    # With hidden thinking on, the model writes the lesson in its thinking (shown in the
-    # terminal only as a one-line "· summary", never reaching the note) and goes straight
-    # to the next quiz. Off, the teaching has to be the visible message — the note.
-    env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
     if log:
         env["LEARN_LOG_FILE"] = log
     else:
         env.pop("LEARN_LOG_FILE", None)
 
+    first = topic
+    if first and (sources or urls):
+        first += "\n\nMy material: " + ", ".join(sources + urls)
     cmd = [
         "claude",
         "--model", MODEL,
@@ -211,12 +319,14 @@ def start_session(topic, log, workdir):
         "--permission-mode", "default",
         "--system-prompt-file", prompt_file,
         "--settings", json.dumps(session_settings(log)),
-        "-n", "learn" + (f": {topic[:40]}" if topic else ""),
+        "-n", f"{mode}" + (f": {topic[:40]}" if topic else ""),
     ]
-    if topic:
-        cmd.append(topic)
+    if first:
+        cmd.append(first)
 
-    print(f"{BOLD}learn{RESET}{DIM} · {MODEL} · effort {EFFORT} · {workdir}{RESET}", file=sys.stderr)
+    print(f"{BOLD}{mode}{RESET}{DIM} · {MODEL} · effort {EFFORT} · {workdir}{RESET}", file=sys.stderr)
+    for s in sources + urls:
+        print(f"{DIM}  material: {s}{RESET}", file=sys.stderr)
     if log:
         if open_in_obsidian(log):
             print(f"{DIM}lesson opened in Obsidian: {os.path.relpath(log)}{RESET}", file=sys.stderr)
@@ -225,7 +335,7 @@ def start_session(topic, log, workdir):
     os.execvpe("claude", cmd, env)
 
 
-# --- helper agents: researcher, mermaid-maker, svg-maker (learn-agent <name> <task>) ---
+# --- helper agents (learn-agent <researcher|reader|mermaid-maker|svg-maker> <task>) ---
 
 def describe(name, args):
     if name == "WebSearch":
@@ -236,7 +346,7 @@ def describe(name, args):
         cmd = (args.get("command") or "").splitlines()
         return f"safe_bash   {cmd[0][:120] if cmd else ''}"
     if name == "Read":
-        return f"read        {args.get('file_path', '')}"
+        return f"read        {args.get('file_path', '')} {args.get('pages', '')}".rstrip()
     return name
 
 
@@ -249,9 +359,11 @@ def run_agent(name, task, verbose):
     try:
         meta, body = read_agent(name)
     except OSError:
-        sys.exit(f"learn-agent: no agent named {name!r} (have: researcher, mermaid-maker, svg-maker)")
+        have = ", ".join(sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(os.path.join(ROOT, "agents", "*.md"))))
+        sys.exit(f"learn-agent: no agent named {name!r} (have: {have})")
     model, effort = meta.get("model", "haiku"), meta.get("effort", "low")
     tools = ",".join(t.strip() for t in meta.get("tools", "").split(",") if t.strip())
+    task = localise_paths(task, os.getcwd())
     # pi's base prompt carries the date; a replaced Claude Code prompt doesn't.
     prompt_file = write_cache(f"{name}-{os.getpid()}.md", f"Today is {datetime.date.today().isoformat()}.\n\n{body}")
     settings = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [hook("safe-bash.py")]}]}}
@@ -305,7 +417,11 @@ def run_agent(name, task, verbose):
         print(f"{DIM}done · {result.get('num_turns')} turns" + (f" · ${cost:.4f}" if cost is not None else "") + RESET, file=sys.stderr)
         print(file=sys.stderr)
     if result and (result.get("is_error") or result.get("subtype", "success") != "success"):
-        print(f"{RED}{name} stopped early: {result.get('subtype')}{RESET}", file=sys.stderr)
+        msg = f"{name} stopped early: {result.get('subtype')}"
+        print(f"{RED}{msg}{RESET}", file=sys.stderr)
+        if not final:  # tell the teacher plainly so it can carry on without the result
+            print(f"({msg} — no result. Continue without it, or ask a narrower question.)")
+            sys.exit(1)
     if final:
         print(final.strip())
     sys.exit(0 if final else 1)
@@ -324,43 +440,46 @@ def main():
     args = sys.argv[1:]
     if not shutil.which("claude"):
         sys.exit("learn: the `claude` CLI is not on your PATH — install Claude Code first: https://code.claude.com")
+    prog = os.path.basename(sys.argv[0])
     # `learn-agent <name> [task | <<EOF task EOF]` — how the teacher calls its subagents.
-    if os.path.basename(sys.argv[0]) == "learn-agent":
+    if prog == "learn-agent":
         if not args:
-            sys.exit("usage: learn-agent <researcher|mermaid-maker|svg-maker> <task>")
+            sys.exit("usage: learn-agent <researcher|reader|mermaid-maker|svg-maker> <task>")
         return run_agent(args[0], read_task(args[1:], "learn-agent: give the task as an argument or on stdin"), False)
     if args[:1] in (["-h"], ["--help"]):
         print(__doc__.strip())
         return
 
-    log, no_log, words = None, False, []
+    mode = "study" if prog == "study" else "learn"
+    log, no_log, words, files, urls = None, False, [], [], []
     i = 0
     while i < len(args):
         a = args[i]
         if a == "--research":
             os.chdir(learn_dir() if os.path.isdir(learn_dir()) else ROOT)
             return run_agent("researcher", read_task(args[i + 1:], 'usage: learn --research "your question"'), True)
-        if a == "--log":
+        if a in ("--study", "--learn"):
+            mode = a[2:]
+        elif a == "--log":
             if i + 1 >= len(args):
                 sys.exit("usage: learn --log path/to/notes.md")
-            log = args[i + 1]
-            i += 2
-            continue
-        if a == "--no-log":
+            log = os.path.abspath(args[i + 1])  # relative to where you ran it, before moving into the Learning folder
+            i += 1
+        elif a == "--no-log":
             no_log = True
+        elif re.match(r"https?://", a):
+            urls.append(a)
+        elif os.path.exists(unescape_path(a)) and ("/" in a or "." in os.path.basename(a)):
+            files.append(os.path.abspath(unescape_path(a)))
         elif a.startswith("-"):
-            sys.exit(f"learn: unknown option {a} (see learn --help)")
+            sys.exit(f"{prog}: unknown option {a} (see {prog} --help)")
         else:
             words.append(a)
         i += 1
 
-    topic = " ".join(words).strip()
     if not sys.stdin.isatty():
-        sys.exit("learn: a session needs an interactive terminal (use learn --research for piped questions)")
-    workdir = learn_dir()
-    if log:
-        log = os.path.abspath(log)  # relative to where you ran learn, before moving into workdir
-    start_session(topic, None if no_log else (log or default_log(workdir, topic)), workdir)
+        sys.exit(f"{prog}: a session needs an interactive terminal (use learn --research for piped questions)")
+    start_session(mode, " ".join(words).strip(), files, urls, False if no_log else log, learn_dir())
 
 
 if __name__ == "__main__":

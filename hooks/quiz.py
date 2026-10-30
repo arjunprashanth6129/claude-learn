@@ -2,8 +2,9 @@
 """quiz — grade a quiz the moment the learner answers it.
 
 Claude Code port of the grading half of extensions/quiz.ts from
-amosblomqvist/learn. The teacher asks quizzes with AskUserQuestion
-(header "Quiz") and puts the answer key in the call's hidden `metadata.source`:
+amosblomqvist/learn. The teacher asks graded questions with AskUserQuestion,
+using one of the graded headers below, and puts the answer key in the call's
+hidden `metadata.source`:
 
     {"correct": ["<option label>", ...], "explanation": "<why>"}
 
@@ -15,10 +16,20 @@ import json
 import sys
 
 DONT_KNOW = "I don't know"
+# Graded headers -> how they're labelled in the note.
+GRADED = {"probe": "Pre-quiz", "quiz": "Quiz", "review": "Topic quiz", "final": "Final quiz"}
+
+
+def kind(q):
+    return (q.get("header") or "").strip().lower()
 
 
 def is_quiz(q):
-    return (q.get("header") or "").strip().lower() == "quiz"
+    return kind(q) in GRADED
+
+
+def label(q):
+    return GRADED.get(kind(q), "Question")
 
 
 def answer_key(tool_input):

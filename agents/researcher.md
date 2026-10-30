@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: Web researcher — searches the web and synthesizes findings
-tools: WebSearch, WebFetch, Bash
+tools: WebSearch, WebFetch, Bash, Read
 model: haiku
 effort: low
 ---
@@ -30,6 +30,8 @@ Evaluation — what to keep vs drop:
 - Drop: SEO filler, outdated info, beginner tutorials (unless that's the audience)
 
 If the first round of searches doesn't fully answer the question, search again with refined queries targeting the gaps.
+
+For a PDF source (a textbook chapter, a paper), `WebFetch` often can't read it. Download it with `curl -sL "<url>" -o "$TMPDIR/source.pdf"` and read the pages you need with `Read` (use `pages`, at most 20 per call).
 
 Your FINAL assistant message is your entire deliverable — it must stand alone, using this format:
 

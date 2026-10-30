@@ -1,16 +1,31 @@
 # claude-learn
 
-`learn` is an AI teacher in your terminal, built on [Claude Code](https://code.claude.com). Tell it what you want to learn. It finds out what you already know with quick quizzes, proposes a lesson plan, then teaches you step by step, checking each step with a quiz before moving on. The whole lesson is mirrored into a markdown file you can read in [Obsidian](https://obsidian.md) with math, diagrams and images rendered.
+An AI teacher in your terminal, built on [Claude Code](https://code.claude.com). Tell it what you want to learn, optionally hand it your own material (a textbook chapter, notes, a URL), and it teaches you one idea at a time. It checks each idea with a graded quiz, and when you miss one it re-teaches it a different way. The whole lesson is written live into a note in [Obsidian](https://obsidian.md), with math, diagrams, revision notes and every quiz rendered.
 
-Inspired from the learning system by [amosblomqvist/learn](https://github.com/amosblomqvist/learn), shown in the video [How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU). The original runs on [pi](https://github.com/badlogic/pi-mono). This version runs the same teaching method, the same agents and the same lesson log on Claude Code, using Claude Sonnet.
+Inspired from the learning system by [amosblomqvist/learn](https://github.com/amosblomqvist/learn), shown in the video [How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU). The original runs on [pi](https://github.com/badlogic/pi-mono); this version runs the same teaching method on Claude Code.
+
+## Two modes
+
+| | `learn` | `study` |
+|---|---|---|
+| For | Understanding a topic quickly | Deep dives, exams, your own material |
+| Starts with | A short plan, then straight into teaching | A pre-quiz to find what you already know, then a plan you approve |
+| Each idea | Taught, then one quiz question | Taught in full, then a quiz question |
+| After each topic | — | Revision notes and a topic quiz |
+| At the end | A final quiz and key takeaways | A final quiz, key takeaways and what to revise next |
+
+```bash
+learn "how photosynthesis works"
+study "aldehydes, ketones and carboxylic acids" ~/Downloads/chemistry-ch8.pdf
+```
 
 ## Requirements
 
-- [Claude Code](https://code.claude.com), installed and logged in. Running `claude` in your terminal should work.
+- macOS, with [Claude Code](https://code.claude.com) installed and logged in (running `claude` in your terminal should work).
 - Python 3, which comes with macOS.
+- [Obsidian](https://obsidian.md) (free), with a vault. Lessons are saved in a `Learning` folder inside it.
 - An internet connection during install (it downloads parts of the original system).
 - For diagrams: [Node.js](https://nodejs.org), Google Chrome, and `rsvg-convert` (`brew install librsvg`).
-- To read lessons rendered: [Obsidian](https://obsidian.md) (free). Optional — the lesson file is plain markdown.
 
 ## Install
 
@@ -20,7 +35,7 @@ cd claude-learn
 ./install.sh
 ```
 
-This installs the system into `~/.claude-learn` and the `learn` command into `~/.local/bin`. If the installer says `~/.local/bin` is not on your PATH, add this line to `~/.zshrc` and open a new terminal:
+This installs the system into `~/.claude-learn` and the `learn` and `study` commands into `~/.local/bin`. If the installer says `~/.local/bin` is not on your PATH, add this line to `~/.zshrc` and open a new terminal:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -28,114 +43,124 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Usage
 
-### 1. Have an Obsidian vault (once)
-
-If you already use Obsidian, you're set. `learn` finds your vault and works in a `Learning` folder inside it. If you don't, open Obsidian and create a vault anywhere.
-
-### 2. Start a session
+### Start a session
 
 From any folder:
 
 ```bash
-learn
+learn "what you want to learn"
+study "what you want to study" [files or URLs …]
 ```
 
-Or start with what you want to learn:
-
-```bash
-learn "I want to understand how backtesting works in quantitative finance"
-```
-
-`learn` always moves into `<your vault>/Learning` before starting. It never runs in your home folder, where Claude Code would look through Photos, Music and other apps' data and trigger macOS privacy prompts. The lesson file opens in Obsidian automatically.
+Both commands move into `<your vault>/Learning` before starting, and the lesson note opens in Obsidian by itself. They never run in your home folder, where Claude Code would look through Photos, Music and other apps' data and trigger macOS privacy prompts.
 
 The first time, Claude Code asks whether you trust the `Learning` folder; choose **Yes**. If your vault is in `~/Documents`, macOS may also ask once whether Terminal can access Documents. That is the vault itself, so allow it.
 
-### 3. Learn
+### Give it your material
 
-Type to the teacher like a normal chat. A session goes through three phases:
+Add files or URLs after the topic, with either command:
 
-1. **Probe.** It quizzes you to find exactly where your knowledge runs out, and asks what you want to get out of the topic. Quizzes appear as popups. Pick an answer with the arrow keys and Enter, or choose **I don't know** if you genuinely don't know (that's more useful to it than a guess). You can attach a note to any answer.
-2. **Plan.** It researches the topic, then shows you a plan and a map of how the ideas depend on each other. Say "go" or ask for changes.
-3. **Teach.** It builds the topic one idea at a time — why it's needed, what it is, how it connects to what you know — and quizzes you on each before moving on.
+```bash
+study "electrochemistry" ~/Downloads/ncert-ch2.pdf ~/Notes/electrochem.docx https://example.com/notes
+```
 
-Keep Obsidian next to the terminal. The lesson (`Learning/lessons/learning <topic>.md`) updates as you go: the plan with its dependency map, each idea's explanation with math and diagrams, and every quiz with its grade.
+- **Files:** PDFs, text and markdown notes, Word documents (converted to text) and images. You can also pass a folder.
+- **Drag and drop:** dragging a file from Finder into the Terminal window pastes its path. This works at the start or in the middle of a session (just paste the path into your message).
+- **Where they go:** files are copied into `Learning/sources/`, so you can open them in Obsidian next to the lesson.
+- **How they're used:** a reader agent reads only the pages the teacher needs. Where your material and the web disagree, the teacher follows your material, since that is what you'll be examined on.
 
-Type `/exit` or press Ctrl+D to end the session.
+### During a session
+
+Type to the teacher like a normal chat. Quizzes and questions appear as popups:
+- Pick an answer with the arrow keys and Enter.
+- Choose **I don't know** if you genuinely don't; that's more useful to the teacher than a guess.
+- You can attach a note to any answer.
+
+You're graded the moment you answer: ✓ or ✗, the correct answer, and why. Type `/exit` or press Ctrl+D to end.
+
+### The note
+
+Keep Obsidian next to the terminal. The note (`Learning/lessons/learning <topic>.md` or `studying <topic>.md`) fills in as you go:
+- **The lesson:** the plan and its dependency map, then a heading per idea, with math in LaTeX and diagrams where a picture helps.
+- **Re-teaches:** written in full whenever you miss a quiz.
+- **Revision notes:** `## Notes: <topic>` after each topic (study mode).
+- **Quizzes:** each one is a foldable block with your answer, the correct answer and the explanation. Ones you got right fold away; misses stay open.
+- **Score:** a running score at the bottom, per quiz type.
 
 ### Options
 
 ```bash
-LEARN_DIR=~/Notes/Study learn        # learn in a different folder
-learn --log notes/backtesting.md     # mirror into a file of your choice
-learn --no-log                       # no lesson file
+learn --log notes/topic.md           # write the lesson into a note of your choice
+learn --no-log                       # no note
 learn --research "your question"     # just run the researcher and print a sourced brief
+LEARN_DIR=~/Notes/School study "…"   # use a different folder
 learn --help
 ```
 
-## What's inside
+## How it works
 
 | Part | What it does | Original |
 |---|---|---|
-| Teacher | The main session. Follows the `teach` skill: probe → plan → teach | pi session + `skills/teach` |
-| Quizzes | Graded multiple-choice popups with "I don't know" and a note field | `extensions/quiz.ts` |
-| Questions | Popups for questions with no right answer (your goal, what next) | `extensions/ask-user-question.ts` |
-| `researcher` | Searches the web and returns a sourced brief, so the teacher checks facts instead of guessing | `agents/researcher.md` |
-| `mermaid-maker` | Draws dependency graphs and flowcharts, looks at the image, fixes it, saves it to `viz/` | `agents/mermaid-maker.md` |
-| `svg-maker` | Draws geometric pictures (number lines, vectors, plots) the same way | `agents/svg-maker.md` |
-| Lesson note | Mirrors your messages, the lessons and every quiz with your answer into a markdown note in Obsidian | `extensions/md-log.ts` |
+| Teacher | The main Claude Code session. Follows the mode, plus the `teach` skill for how to explain | pi session + `skills/teach` |
+| Quizzes | Graded popups with "I don't know" and a note field, graded instantly by `hooks/quiz.py` | `extensions/quiz.ts` |
+| Questions | Popups with no right answer (your goal, plan approval, what next) | `extensions/ask-user-question.ts` |
+| `reader` | Reads your files and returns exactly what the teacher asks for, with page numbers | new |
+| `researcher` | Searches the web (and downloads PDFs) and returns a sourced brief, so the teacher checks facts instead of guessing | `agents/researcher.md` |
+| `mermaid-maker`, `svg-maker` | Draw a diagram, look at the rendered image, fix it, save it to `viz/` | `agents/*-maker.md` |
+| Lesson note | Mirrors the lesson, your messages and every quiz into the Obsidian note | `extensions/md-log.ts` |
+| Lesson gate | Blocks a quiz that has no lesson written before it, or no answer key | new |
 | `safe-bash` | Blocks dangerous shell commands (`sudo`, `rm -rf /`, `curl … \| sh`, …) | `safe_bash` |
 
-The `teach` and `visualize` skills and the two diagram agents are downloaded from the original repo when you install, pinned to the version this port was tested with. The skills are used word for word. The diagram agents get one change: their pi-only drawing tools are swapped for the `learn-viz` command (`scripts/fetch-upstream.py` shows the exact edits). The teacher also gets a short extra section that maps the original's tool names to Claude Code's (`system/teacher.md`).
+The `teach` and `visualize` skills and the two diagram agents are downloaded from the original repo when you install, pinned to the version this port was tested with. The skills are used word for word; `learn` mode uses the teach skill without its probe → plan → teach process, since it has its own shorter one. The diagram agents get one change: their pi-only drawing tools are swapped for the `learn-viz` command (`scripts/fetch-upstream.py` shows the exact edits).
+
+Helper agents run as separate, lean `claude -p` processes through the `learn-agent` command (you'll see `Bash(learn-agent reader …)` while one works). Their final message comes back to the teacher, as with pi's subagents.
+
+### Why Haiku teaches by default
+
+On Claude Code 2.1.30x, Sonnet 5.5's hidden thinking can't be turned off. After each quiz answer it tends to work out the next lesson in that thinking and go straight to the next quiz. The teaching then never appears in the terminal or in the note. Haiku 4.5 writes the lesson as visible text after every answer, and costs about a third as much. Sonnet is still available (`LEARN_MODEL=sonnet`), and the lesson gate makes it write the lesson before quizzing. It sometimes takes a few tries, which costs extra.
 
 ### Differences from the original
 
-Claude Code doesn't let you add new popup tools, so quizzes use Claude Code's built-in question popup:
-
-- **Grading.** The teacher attaches a hidden answer key to each quiz. As soon as you answer, a hook (`hooks/quiz.py`) grades your pick and shows ✓ / ✗, the correct answer and the explanation, as the original quiz tool did. The lesson log records it as `Quiz — correct ✓`, `Quiz — incorrect ✗` or `Quiz — I don't know`.
-- **Number of options.** The popup holds at most 4 options, so a quiz has up to 3 real answers plus "I don't know".
-- **Typed answers.** The popup also offers "Type something" and "Chat about this". If you type your own answer, the teacher grades it on its meaning.
-
-Subagents run as separate processes through the `learn-agent` command (you'll see `Bash(learn-agent researcher …)` while one works) instead of in tmux panes. Their final message comes back to the teacher, as with pi's subagents. The lesson note is written for every session automatically instead of being linked with `/md-log`.
-
-The teacher runs with hidden thinking turned off. With it on, the model tended to work out the lesson in its private thinking and go straight to the next quiz, so the teaching never reached the note (the terminal only showed a one-line `· summary`). With it off, the teaching is the visible message, which is what the note mirrors.
+- **Popup.** Claude Code doesn't let you add new popup tools, so quizzes use its built-in question popup. It holds at most 4 options, so a quiz has up to 3 real answers plus "I don't know". The popup also offers "Type something"; if you type your own answer, the teacher grades it on its meaning.
+- **Answer key.** The teacher attaches a hidden answer key to each graded question. The gate refuses a quiz without one, so every quiz is graded.
+- **Note.** The lesson note is written automatically for every session instead of being linked with `/md-log`, and quizzes are folded into single blocks.
 
 ## Cost
 
-| Part | Model | Why |
-|---|---|---|
-| Teacher | Sonnet, low effort, no hidden thinking | Writes the lesson; quality matters most |
-| `researcher` | Haiku, low effort | Only the teacher reads its brief |
-| `mermaid-maker`, `svg-maker` | Sonnet, low effort | Must check its own picture is correct |
-
-To keep each message small, the teacher session runs with:
-- only its own instructions (not Claude Code's coding instructions) and two tools: the popup and `learn-agent`
-- no MCP servers (like Notion or Google Drive), no skills, no memory or CLAUDE.md files
-- no background summaries and no auto-mode permission checks
-
-Each message carries about half the context of a normal Claude Code session.
-
-In testing (API prices; on a Claude subscription this comes out of your plan's usage limits instead):
-
-| Step | Cost |
+| Part | Model |
 |---|---|
-| A teacher message (lesson text or a quiz) | about $0.013 |
-| A researcher fact check | about $0.13 |
-| A diagram | about $0.05 |
+| Teacher | Haiku, low effort |
+| `reader`, `researcher` | Haiku, low effort |
+| `mermaid-maker`, `svg-maker` | Sonnet, low effort (they must check their own picture is right) |
 
-Before these changes a teacher message cost about $0.031. Each message re-sends the conversation so far, so later messages in a long lesson cost a little more than early ones.
+To keep each message small, the teacher runs with only its own instructions (not Claude Code's coding instructions) and two tools. It also loads:
+- no MCP servers, skills, memory or CLAUDE.md files
+- no background summaries or auto-mode permission checks
 
-To trade quality for cost:
+In testing, at API prices (on a Claude subscription this comes out of your plan's usage limits instead):
+
+| Session | Teacher cost |
+|---|---|
+| `learn`: 2 ideas, 2 re-teaches, final quiz | about $0.08 |
+| `study`: outline of a PDF, pre-quiz, 2 ideas, topic notes and quiz, final quiz | about $0.15 |
+| A researcher fact check (extra) | about $0.13 |
+| A diagram (extra) | about $0.05 |
+
+Each message re-sends the conversation so far, so longer lessons cost more per message towards the end. Each helper-agent run stops at $0.30 (change with `LEARN_BUDGET_USD=0.15`).
 
 ```bash
-LEARN_MODEL=haiku learn          # about 3x cheaper, follows the teaching method less carefully
-LEARN_EFFORT=medium learn        # more careful, more expensive
+LEARN_MODEL=sonnet study "…"     # stronger teacher, about 3x the cost (see above)
+LEARN_EFFORT=medium learn "…"    # more careful, more expensive
 ```
-
-Each helper-agent run stops at $0.30 (change with `LEARN_BUDGET_USD=0.15`).
 
 ## Customizing
 
-The teaching method was written by the original author for their own learning. To change how you're taught, edit `~/.claude-learn/skills/teach/SKILL.md` (note that running `./install.sh` again downloads a fresh copy over your edits). The researcher's instructions are in `agents/researcher.md`, and the Claude Code adapter is in `system/teacher.md`. Run `./install.sh` after editing those.
+- **Session shape:** `system/mode-learn.md` and `system/mode-study.md` (how many ideas, when to quiz, what goes in the notes).
+- **Shared rules:** `system/teacher.md` (quiz protocol, note structure, tool mapping).
+- **How you're taught:** `~/.claude-learn/skills/teach/SKILL.md`. Running `./install.sh` again downloads a fresh copy over your edits.
+- **Agents:** `agents/*.md`.
+
+Run `./install.sh` after editing the repo's files.
 
 ## Updating
 
@@ -145,13 +170,13 @@ git pull
 ./install.sh
 ```
 
-The installer also removes files from earlier versions of this project (the standalone `researcher` command).
-
 ## Uninstall
 
 ```bash
-rm -rf ~/.claude-learn ~/.local/bin/learn
+rm -rf ~/.claude-learn ~/.local/bin/learn ~/.local/bin/study
 ```
+
+Your lessons and sources stay in your vault's `Learning` folder.
 
 ## Credits
 
