@@ -1,14 +1,14 @@
 # claude-learn
 
-An AI teacher in your terminal, built on [Claude Code](https://code.claude.com). Tell it what you want to learn, optionally hand it your own material (a textbook chapter, notes, a URL), and it teaches you one idea at a time. It checks each idea with a graded quiz, and when you miss one it re-teaches it a different way. The whole lesson is written live into a note in [Obsidian](https://obsidian.md), with math, diagrams, revision notes and every quiz rendered.
+An AI teacher in your terminal, built on [Claude Code](https://code.claude.com). Tell it what you want to learn, optionally hand it your own material (a textbook chapter, notes, a URL), and it teaches you one idea at a time. It checks your conceptual understanding with a quiz and active recall questions, and when you miss one it re-teaches the concept in a different way. The whole lesson is written live into a note in [Obsidian](https://obsidian.md), with math, diagrams, revision notes and every quiz rendered.
 
-Inspired from the learning system by [amosblomqvist/learn](https://github.com/amosblomqvist/learn), shown in the video [How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU). The original runs on [pi](https://github.com/badlogic/pi-mono); this version runs the same teaching method on Claude Code.
+Inspired from the learning system by [amosblomqvist/learn](https://github.com/amosblomqvist/learn).
 
 ## Two modes
 
 | | `learn` | `study` |
 |---|---|---|
-| For | Understanding a topic quickly | Deep dives, exams, your own material |
+| For | Understanding a topic briefly | Deep dives, exams, your own material |
 | Starts with | A short plan, then straight into teaching | A pre-quiz to find what you already know, then a plan you approve |
 | Each idea | Taught, then one quiz question | Taught in full, then a quiz question |
 | After each topic | — | Revision notes and a topic quiz |
